@@ -267,7 +267,7 @@ index 0000000..5d0db6d
 +
 +#endif /* _LINUX64_ABI_H_ */
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 121579c..a29ff63 100644
+index 121579c..bc6d4fa 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
 @@ -106,6 +106,7 @@ bsd/dev/random/randomdev.c		standard
@@ -278,7 +278,15 @@ index 121579c..a29ff63 100644
  bsd/dev/bonito_reset.c			standard
  bsd/dev/bonito_misc.c			standard
  bsd/dev/sweet_sample.c			standard
-@@ -191,6 +192,7 @@ bsd/net/dlil.c				optional networking
+@@ -124,6 +125,7 @@ bsd/dev/redwood_net.c		standard
+ bsd/dev/redwood_apple80211.c	standard
+ bsd/dev/flame_sta.c		standard
+ bsd/dev/flame_wlan.c		standard
++bsd/dev/linux64_net_link.c	standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+@@ -191,6 +193,7 @@ bsd/net/dlil.c				optional networking
  bsd/net/ether_if_module.c		optional ether
  bsd/net/ether_inet_pr_module.c		optional ether inet
  bsd/net/ether_inet6_pr_module.c		optional ether inet
@@ -334,6 +342,75 @@ index 0000000..f31b91c
 +	/* payload follows */
 +};
 +#endif
+diff --git a/bsd/dev/linux64_net_link.c b/bsd/dev/linux64_net_link.c
+new file mode 100644
+index 0000000..1c37284
+--- /dev/null
++++ b/bsd/dev/linux64_net_link.c
+@@ -0,0 +1,63 @@
++/*
++ * LINUX64: en0 over the host's xnu0 (fki.ko's virtual Ethernet device): Linux owns the radio, gives DHCP and DNS on xnu0 and NATs
++ * (docs/NETWORK.md). The interface is bsd/dev/redwood_net.c's; this is its link driver. Boot-arg linux64net=1.
++ */
++#include <pexpert/arm64/board_config.h>
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/kpi_mbuf.h>
++#include <sys/redwood_net.h>
++#include <pexpert/pexpert.h>
++
++#if defined(SWEET_HOSTED)
++extern long linux64_net_send(const void *frame, unsigned long length);
++extern long linux64_net_recv(void *buffer, unsigned long size);
++
++static uint8_t l64_tx[REDWOOD_NET_FRAME_MAX], l64_rx[2048];
++
++/* one thread at a time (redwood_net.c holds its transmit lock) */
++static bool
++l64_transmit(mbuf_t packet, size_t length)
++{
++	if (length > sizeof(l64_tx) || mbuf_copydata(packet, 0, length, l64_tx) != 0) {
++		return false;
++	}
++	return linux64_net_send(l64_tx, length) > 0;
++}
++
++/* from the interface's thread only */
++static unsigned
++l64_poll(void)
++{
++	unsigned n = 0;
++	long length;
++
++	while (n < 64 && (length = linux64_net_recv(l64_rx, sizeof(l64_rx))) > 0) {
++		redwood_net_input(l64_rx, (size_t)length);
++		n++;
++	}
++	return n;
++}
++
++static const struct redwood_net_link l64_link = {
++	.name = "the host's xnu0",
++	.address = { 0x02, 0x00, 0x5e, 0x77, 0xee, 0x10 },
++	.wireless = false,
++	.up = true,
++	.transmit = l64_transmit,
++	.poll = l64_poll,
++};
++#endif /* SWEET_HOSTED */
++
++void linux64_net_link_init(void);
++void
++linux64_net_link_init(void)
++{
++#if defined(SWEET_HOSTED)
++	uint32_t on = 0;
++
++	if (PE_parse_boot_argn("linux64net", &on, sizeof(on)) && on) {
++		redwood_net_attach(&l64_link);
++	}
++#endif
++}
 diff --git a/bsd/dev/memdev.c b/bsd/dev/memdev.c
 index 3e6bffa..3c26b89 100644
 --- a/bsd/dev/memdev.c
@@ -543,6 +620,36 @@ index 3e6bffa..3c26b89 100644
  
  	/* make sure (base, size) is a valid range and will not overflow */
  	assert(*size < (UINT64_MAX - *base));
+diff --git a/bsd/dev/redwood_net.c b/bsd/dev/redwood_net.c
+index e7b46fd..3b46756 100644
+--- a/bsd/dev/redwood_net.c
++++ b/bsd/dev/redwood_net.c
+@@ -11,6 +11,7 @@
+  * What carries the frames is a link driver's business; sys/redwood_net.h is all that the two
+  * know of each other. The first link is QEMU's virtio network device (redwood_virtio_net.c).
+  */
++#include <pexpert/arm64/board_config.h>
+ #include <kern/clock.h>
+ #include <kern/locks.h>
+ #include <kern/thread.h>
+@@ -32,6 +33,7 @@
+ #include <sys/sockio.h>
+ #include <sys/systm.h>
+ 
++extern void RedwoodEthernetStart(const char *interface, const uint8_t *address);
+ extern void RedwoodWLANStart(const char *interface, const uint8_t *address);  /* iokit/Kernel/RedwoodWLAN.cpp */
+ 
+ static LCK_GRP_DECLARE(net_lck_grp, "redwood-net");
+@@ -359,6 +361,9 @@ redwood_net_attach(const struct redwood_net_link *link)
+ 		printf("net: en0 attached on %s (a radio), link %s\n", link->name, net_link_up ? "up" : "down");
+ 		RedwoodWLANStart("en0", address);
+ 	} else {
++#if defined(SWEET_HOSTED)
++		RedwoodEthernetStart("en0", address);   /* configd manages only an interface it finds in the registry */
++#endif
+ 		printf("net: en0 attached on %s, address %02x:%02x:%02x:%02x:%02x:%02x, link %s\n", link->name, address[0],
+ 		    address[1], address[2], address[3], address[4], address[5], net_link_up ? "up" : "down");
+ 	}
 diff --git a/bsd/dev/sweet_gpu_host.c b/bsd/dev/sweet_gpu_host.c
 new file mode 100644
 index 0000000..afcecf0
@@ -924,7 +1031,7 @@ index d405964..3033246 100644
  static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
  static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index bb2a2bf..14e9656 100644
+index bb2a2bf..bb2dd78 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -405,6 +405,48 @@ void (*unmountroot_pre_hook)(void);
@@ -976,7 +1083,7 @@ index bb2a2bf..14e9656 100644
  extern lck_rw_t rootvnode_rw_lock;
  
  SECURITY_READ_ONLY_LATE(struct mach_vm_range) bsd_pageable_range = {};
-@@ -1043,6 +1085,18 @@ bsd_init(void)
+@@ -1043,6 +1085,25 @@ bsd_init(void)
  	bsd_init_kprintf("calling siginit\n");
  	siginit(kernproc);
  
@@ -989,6 +1096,13 @@ index bb2a2bf..14e9656 100644
 +		    kernel_thread_start(sweet_mesalog_thread, NULL, &t) == KERN_SUCCESS) {
 +			thread_deallocate(t);
 +		}
++	}
++#endif
++
++#if defined(SWEET_HOSTED)
++	{
++		extern void linux64_net_link_init(void);        /* bsd/dev/linux64_net_link.c */
++		linux64_net_link_init();
 +	}
 +#endif
 +
@@ -1381,6 +1495,80 @@ index 7a32a23..776fcbe 100644
  	panic("Unable to find driver for this platform: \"%s\".",
  	    platform_name);
  
+diff --git a/iokit/Kernel/arm/RedwoodWLAN.cpp b/iokit/Kernel/arm/RedwoodWLAN.cpp
+index 89d8840..54516fb 100644
+--- a/iokit/Kernel/arm/RedwoodWLAN.cpp
++++ b/iokit/Kernel/arm/RedwoodWLAN.cpp
+@@ -135,3 +135,69 @@ RedwoodWLANStart(const char * interface, const uint8_t * address)
+ 	}
+ 	controller->release();
+ }
++
++/*
++ * A wired interface (bonito, hosted: en0 on the Linux host's link), listed as SystemConfiguration lists Ethernet: an object of the class
++ * IONetworkInterface whose parent is an IOEthernetController.
++ */
++class IOEthernetController : public IOService
++{
++	OSDeclareDefaultStructors(IOEthernetController);
++};
++
++OSDefineMetaClassAndStructors(IOEthernetController, IOService);
++
++class RedwoodEthernet : public IONetworkInterface
++{
++	OSDeclareDefaultStructors(RedwoodEthernet);
++};
++
++OSDefineMetaClassAndStructors(RedwoodEthernet, IONetworkInterface);
++
++extern "C" void RedwoodEthernetStart(const char * interface, const uint8_t * address);
++
++void
++RedwoodEthernetStart(const char * interface, const uint8_t * address)
++{
++	IOService * platform = IOService::getPlatform();
++	IOEthernetController * controller = OSTypeAlloc(IOEthernetController);
++	RedwoodEthernet * ethernet = OSTypeAlloc(RedwoodEthernet);
++	OSData * mac;
++	OSNumber * number;
++
++	if (platform == NULL || controller == NULL || ethernet == NULL || !controller->init() || !ethernet->init()) {
++		OSSafeReleaseNULL(controller);
++		OSSafeReleaseNULL(ethernet);
++		IOLog("RedwoodEthernet: cannot create the services\n");
++		return;
++	}
++	if ((mac = OSData::withBytes(address, 6)) != NULL) {
++		controller->setProperty("IOMACAddress", mac);
++		mac->release();
++	}
++	controller->setProperty("IOBuiltin", true);
++	if ((controller = (IOEthernetController *) publish(controller, platform, "RedwoodEthernetController")) == NULL) {
++		ethernet->release();
++		IOLog("RedwoodEthernet: the controller did not start\n");
++		return;
++	}
++	ethernet->setProperty("IOInterfaceName", interface);
++	ethernet->setProperty("BSD Name", interface);
++	ethernet->setProperty("IOInterfaceNamePrefix", "en");
++	if ((number = OSNumber::withNumber(6ULL, 32)) != NULL) {        /* IFT_ETHER */
++		ethernet->setProperty("IOInterfaceType", number);
++		number->release();
++	}
++	if ((number = OSNumber::withNumber((unsigned long long) (interface[2] - '0'), 32)) != NULL) {
++		ethernet->setProperty("IOInterfaceUnit", number);
++		number->release();
++	}
++	ethernet->setProperty("IOBuiltin", true);
++	ethernet->setProperty("IOPrimaryInterface", true);
++	if (publish(ethernet, controller, "RedwoodEthernet") == NULL) {
++		IOLog("RedwoodEthernet: the service did not start\n");
++	} else {
++		ethernet->release();
++	}
++	controller->release();
++}
 diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
 index 7fb6243..0c18304 100644
 --- a/iokit/Kernel/arm/SweetAccelerator.cpp

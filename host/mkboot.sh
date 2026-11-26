@@ -38,12 +38,14 @@ if [ -d "$WU/root" ] && [ -f "$MF/wlanmdsp.mbn" ]; then
 	install -m755 host/initramfs/wifi-up "$R/bin/wifi-up"
 	install -m755 host/initramfs/wifi-join "$R/bin/wifi-join"
 	install -m755 host/initramfs/udhcpc.sh "$R/etc/udhcpc.sh"
+	install -m755 host/initramfs/xnu-net "$R/bin/xnu-net"
+	cp "$WU/root/usr/sbin/dnsmasq" "$WU/root/usr/sbin/nft" "$R/bin/"
 	L=$R/lib/aarch64-linux-gnu
 	mkdir -p "$L" "$R/lib/firmware/ath10k/WCN3990/hw1.0"
 	for b in usr/bin/rmtfs usr/bin/tqftpserv sbin/iw sbin/wpa_supplicant usr/bin/wpa_passphrase; do cp "$WU/root/$b" "$R/bin/"; done
 	# the libraries they need, from the unpacked packages first and this machine otherwise
 	for i in 1 2 3; do
-		for n in $(objdump -p "$R"/bin/{rmtfs,tqftpserv,iw,wpa_supplicant} "$L"/* 2>/dev/null | awk '/NEEDED/ {print $2}' | sort -u); do
+		for n in $(objdump -p "$R"/bin/{rmtfs,tqftpserv,iw,wpa_supplicant,dnsmasq,nft} "$L"/* 2>/dev/null | awk '/NEEDED/ {print $2}' | sort -u); do
 			[ -e "$L/$n" ] && continue
 			src=$(find "$WU/root" /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu -name "$n" 2>/dev/null | head -n 1)
 			[ -n "$src" ] || { echo "no library $n"; exit 1; }
