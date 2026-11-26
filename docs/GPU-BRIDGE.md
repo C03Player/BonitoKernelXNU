@@ -27,3 +27,21 @@ flushed by the user client before use (as on the direct port). Device informatio
 - hosted28 (2026-11-26): the bridge works end to end: `adrenod` up (chip 0x6010500, GPU addresses 0x100000000 + 4 GiB), the Metal plugin opened the
   user client, buffers were mapped and the first command buffers ran on the Adreno. Then GPU translation faults and a hang recovery: every client got
   the whole address range, so a second client's buffers collided with the first's (`MAP ... -> -28`). Fixed: eight windows, one per client.
+
+## Open: DeviceLost and a black screen (2026-11-26)
+
+Verified on the phone:
+
+- With the bridge on, only the boot logo shows; the Metal plugin then reports `DeviceLost`. The cause is a real GPU fault or hang: msm
+  recovers, the service's fault count goes up, Turnip declares its device lost.
+- Faults seen: `iova=0x20004000` and `iova=0x6002c010`, both CP writes. Each is a mapped address of a client window with the upper 32 bits
+  gone (window bases `0x120000000`, `0x160000000`). Some hangs have no fault line.
+- The packets in the CP's prefetch queue (devcoredump, `CP_ROQ_DBG`) carry the full 64-bit addresses; `CP_ADDR_MODE_CNTL` reads 1.
+- `host/gpu/vatest.c` (Linux only, no iOS) writes through `CP_MEM_WRITE` and `CP_EVENT_WRITE` at `0x100000000`, `0x120000000` and
+  `0x160000000` without a fault.
+- Turnip's own messages: boot-arg `sweetmesalog=1` (`XNU_MESALOG=1 xnu-run`). `ADRENOD_DUMP=1` marks buffers for the crash dump, but msm
+  does not dump imported buffers, so command buffer contents are not in it.
+
+Inferred, not tested: the GPU reads partly stale command memory. The direct port requires pool memory without any cacheable alias. Here
+Linux's linear map is a cacheable alias of the pool, and `fki.ko` maps the dma-buf with `DMA_ATTR_SKIP_CPU_SYNC`. Next experiments: clean
+and invalidate the pool once before first use, and dump the faulting command buffers (an `mmap` for the dma-buf in `fki.ko`).

@@ -102,6 +102,7 @@ static int do_unmap(uint64_t iova, uint64_t len)
  * translation faults on render targets). So every live buffer goes into every submit, the command buffers first.
  */
 static struct drm_msm_gem_submit_bo bos[MAX_MAPS];
+static uint32_t dumpflag;	/* ADRENOD_DUMP=1: buffer contents go into the crash dump (/sys/class/devcoredump) */
 
 static int do_submit(const struct agpu_ib *ib, uint32_t n, uint64_t *fence)
 {
@@ -119,7 +120,7 @@ static int do_submit(const struct agpu_ib *ib, uint32_t n, uint64_t *fence)
 		for (idx = 0; idx < nbos && bos[idx].handle != m->handle; idx++)
 			;
 		if (idx == nbos)
-			bos[nbos++] = (struct drm_msm_gem_submit_bo){ .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE, .handle = m->handle };
+			bos[nbos++] = (struct drm_msm_gem_submit_bo){ .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE | dumpflag, .handle = m->handle };
 		cmds[i].type = MSM_SUBMIT_CMD_BUF;
 		cmds[i].submit_idx = idx;
 		cmds[i].submit_offset = (uint32_t)(ib[i].iova - m->iova);
@@ -131,7 +132,7 @@ static int do_submit(const struct agpu_ib *ib, uint32_t n, uint64_t *fence)
 		for (j = 0; j < ncmd && bos[j].handle != maps[i].handle; j++)
 			;
 		if (j == ncmd)
-			bos[nbos++] = (struct drm_msm_gem_submit_bo){ .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE, .handle = maps[i].handle };
+			bos[nbos++] = (struct drm_msm_gem_submit_bo){ .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE | dumpflag, .handle = maps[i].handle };
 	}
 	struct drm_msm_gem_submit s = {
 		.flags = MSM_PIPE_3D0 | MSM_SUBMIT_NO_IMPLICIT, .nr_bos = nbos, .nr_cmds = n,
@@ -217,6 +218,8 @@ static size_t serve(const uint8_t *in, size_t inlen, uint8_t *out)
 
 int main(int argc, char **argv)
 {
+	if (getenv("ADRENOD_DUMP"))
+		dumpflag = MSM_SUBMIT_BO_DUMP;
 	const char *node = "/dev/dri/renderD128";
 	for (int a = 1; a < argc; a++) {
 		if (argv[a][0] == '-' && argv[a][1] == 'v')
