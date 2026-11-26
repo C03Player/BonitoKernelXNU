@@ -545,7 +545,7 @@ index 3e6bffa..3c26b89 100644
  	assert(*size < (UINT64_MAX - *base));
 diff --git a/bsd/dev/sweet_gpu_host.c b/bsd/dev/sweet_gpu_host.c
 new file mode 100644
-index 0000000..ac9d437
+index 0000000..674915d
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_host.c
 @@ -0,0 +1,333 @@
@@ -568,7 +568,7 @@ index 0000000..ac9d437
 +extern long linux64_hostcall(const void *req, unsigned long len, void *reply, unsigned long max);
 +
 +static LCK_GRP_DECLARE(sgh_grp, "sweet_gpu_host");
-+static LCK_MTX_DECLARE(sgh_call, &sgh_grp);	/* one request at a time: the buffers below are shared */
++static LCK_MTX_DECLARE(sgh_lock, &sgh_grp);	/* one request at a time: the buffers below are shared */
 +static LCK_MTX_DECLARE(sgh_pool, &sgh_grp);
 +static uint8_t sgh_req[sizeof(struct agpu_req) + AGPU_MAX_PAGES * 8];
 +static uint8_t sgh_rep[sizeof(struct agpu_rep) + 64];
@@ -633,7 +633,7 @@ index 0000000..ac9d437
 +{
 +	struct agpu_rep *r;
 +
-+	lck_mtx_lock(&sgh_call);
++	lck_mtx_lock(&sgh_lock);
 +	if (sgh_state == 0) {
 +		int err = sgh_call(AGPU_INFO, 0, 0, 0, NULL, 0, &r);
 +		if (err == 0) {
@@ -648,7 +648,7 @@ index 0000000..ac9d437
 +			sgh_state = -1;
 +		}
 +	}
-+	lck_mtx_unlock(&sgh_call);
++	lck_mtx_unlock(&sgh_lock);
 +	return sgh_state == 1 && sgh_pool_units != 0;
 +}
 +
@@ -733,9 +733,9 @@ index 0000000..ac9d437
 +	if (npages == 0 || npages > AGPU_MAX_PAGES) {
 +		return EINVAL;
 +	}
-+	lck_mtx_lock(&sgh_call);
++	lck_mtx_lock(&sgh_lock);
 +	err = sgh_call(AGPU_MAP, npages, iova, 0, pages, (size_t)npages * 8, &r);
-+	lck_mtx_unlock(&sgh_call);
++	lck_mtx_unlock(&sgh_lock);
 +	if (err) {
 +		printf("SWEET GPU host: map %u pages at 0x%llx: %d\n", npages, iova, err);
 +	}
@@ -748,9 +748,9 @@ index 0000000..ac9d437
 +{
 +	struct agpu_rep *r;
 +
-+	lck_mtx_lock(&sgh_call);
++	lck_mtx_lock(&sgh_lock);
 +	(void)sgh_call(AGPU_UNMAP, 0, iova, len, NULL, 0, &r);
-+	lck_mtx_unlock(&sgh_call);
++	lck_mtx_unlock(&sgh_lock);
 +}
 +
 +uint32_t sweet_gpu_host_submit_v2(const uint64_t *iova, const uint32_t *dwords, unsigned n, bool *busy);
@@ -769,12 +769,12 @@ index 0000000..ac9d437
 +	for (unsigned i = 0; i < n; i++) {
 +		ib[i] = (struct agpu_ib){ .iova = iova[i], .dwords = dwords[i] };
 +	}
-+	lck_mtx_lock(&sgh_call);
++	lck_mtx_lock(&sgh_lock);
 +	err = sgh_call(AGPU_SUBMIT, n, 0, 0, ib, n * sizeof(ib[0]), &r);
 +	if (err == 0) {
 +		fence = (uint32_t)r->v[0];
 +	}
-+	lck_mtx_unlock(&sgh_call);
++	lck_mtx_unlock(&sgh_lock);
 +	if (err) {
 +		static unsigned told;
 +		if (told++ < 8) {
@@ -794,9 +794,9 @@ index 0000000..ac9d437
 +
 +	for (;;) {
 +		uint64_t slice = timeout_ns - waited < AGPU_WAIT_SLICE_NS ? timeout_ns - waited : AGPU_WAIT_SLICE_NS;
-+		lck_mtx_lock(&sgh_call);
++		lck_mtx_lock(&sgh_lock);
 +		int err = sgh_call(AGPU_WAIT, 0, fence, slice, NULL, 0, &r);
-+		lck_mtx_unlock(&sgh_call);
++		lck_mtx_unlock(&sgh_lock);
 +		if (err == 0) {
 +			return 0;
 +		}
@@ -821,11 +821,11 @@ index 0000000..ac9d437
 +	struct agpu_rep *r;
 +	uint64_t t = 0;
 +
-+	lck_mtx_lock(&sgh_call);
++	lck_mtx_lock(&sgh_lock);
 +	if (sgh_call(AGPU_TIMESTAMP, 0, 0, 0, NULL, 0, &r) == 0) {
 +		t = r->v[0];
 +	}
-+	lck_mtx_unlock(&sgh_call);
++	lck_mtx_unlock(&sgh_lock);
 +	return t;
 +}
 +
@@ -836,11 +836,11 @@ index 0000000..ac9d437
 +	struct agpu_rep *r;
 +	uint64_t f = 0;
 +
-+	lck_mtx_lock(&sgh_call);
++	lck_mtx_lock(&sgh_lock);
 +	if (sgh_call(AGPU_FAULTS, 0, 0, 0, NULL, 0, &r) == 0) {
 +		f = r->v[0];
 +	}
-+	lck_mtx_unlock(&sgh_call);
++	lck_mtx_unlock(&sgh_lock);
 +	return f;
 +}
 +
