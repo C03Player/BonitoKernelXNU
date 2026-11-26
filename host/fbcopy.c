@@ -23,7 +23,7 @@ int main(int argc, char **argv)
 	 * Written with pwrite, not through a mapping: the DRM fbdev emulation pushes a write() to a command-mode panel at once (it marks the damage),
 	 * while stores into the mmap reached /dev/fb0's memory but never the glass (test hosted23).
 	 */
-	static unsigned char frame[8 << 20];
+	static unsigned char frame[16 << 20];
 	if ((size_t)fix.line_length * rows > sizeof(frame)) {
 		fprintf(stderr, "fb0 too large\n");
 		return 1;

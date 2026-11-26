@@ -65,8 +65,13 @@ Kernel layout of the hosted build: link address `0xfffffff007004000` (not large 
   An injected swipe up (`host/touch.py swipe 540 2140 540 600 12`) unlocked the lock screen; the home screen (apps, dock, widget, wallpaper) is drawn
   and shown through `fbcopy` (`logs/hosted20-after3.png`, not committed).
 
+- hosted21: four CPUs work. hosted23-26: frames reached `/dev/fb0` but not the glass: writes through `fbcopy`'s mmap never reach this command-mode
+  panel; `pwrite` does (and `fbcopy`'s buffer was too small for 4352-byte rows). The touchscreen needed `CONFIG_RMI4_F12`.
+- **hosted26 (2026-11-26): the user unlocked iOS by hand with the phone's own touchscreen** (four CPUs). The screen shows a console cursor,
+  then the Apple logo, then the lock screen, about 70 s after `xnu-run`.
+
 ## Next
-1. Real touch from the screen: `evrelay` relays the rmi4 touchscreen; check its scaling and orientation by hand.
+1. Usability: boot time, frame rate on the panel, network through the host, persistent writable data.
 2. Speed: more CPUs (2 work; try 4-6), boot time, then GPU (a bridge to the host's msm/Turnip driver).
 3. Network through the host (`fki_net_*`), and a persistent writable root.
 4. The crashing daemons (`backupd`, `analyticsd`, `lockdownd`, `backboardd` restarts).
