@@ -20,6 +20,11 @@
   eMMC log or reset paths. The first try on the `BCM2837` config (run 45844052472) built as arm64e and lacked that support.
 - Still to check at run time: other SWEET hardware paths (GIC and IPIs: use `cpus=1` first; drivers matched from the device tree).
 
+## Host modules
+`hosted/` = `fki.ko` and `xnu.ko` of cf3399e (APSL-2.0 / GPL-2.0, see their SPDX lines), changed for this port: boot command line 608 bytes, `T0SZ=25` in XNU's world.
+Build: `make -C /usb/work/linux/out M=$PWD/hosted/fki-ko modules`, then `xnu-ko` with `KBUILD_EXTRA_SYMBOLS`.
+Kernel layout of the hosted build: link address `0xfffffff007004000` (not large memory), 39-bit user and kernel tables.
+
 ## Next
 1. CI: `gh workflow run xnu.yml -f hosted=true`; fix compile and link errors (artifact `xnu-log`).
 2. Load it with `xnu.ko` on the phone: early boot to console messages. Adapt `xnu.ko` to xnu-8796 where needed.
