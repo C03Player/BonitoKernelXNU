@@ -41,6 +41,10 @@ Kernel layout of the hosted build: link address `0xfffffff007004000` (not large 
 - hosted7: root disk found (`hostdisk=/dev/mmcblk0p72`, read-only, the direct port's iOS image), 1536 MB, 16 KB pages; `cma=1700M@0x100000000`. Panic `write_pte_fast: PTE write is unaligned`
   from the commpage: the slid text page address was 4 KB aligned. Fixed.
 
+- hosted8: **iOS root filesystem mounted and `launchd` ran in user mode** (EL0, system calls work). `launchd` exits: `failed to query hardware target: 22`.
+- hosted9: identity properties from `host/mkadtprops.py` (new `adtprops=` parameter of `xnu.ko`) do not help: the generic platform expert has no `hw.target`.
+  Fix: let `SweetPlatformExpert` (a device-tree platform expert) match, with its hardware paths off when hosted.
+
 ## Next
 1. CI: `gh workflow run xnu.yml -f hosted=true`; fix compile and link errors (artifact `xnu-log`).
 2. Load it with `xnu.ko` on the phone: early boot to console messages. Adapt `xnu.ko` to xnu-8796 where needed.

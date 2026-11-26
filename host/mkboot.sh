@@ -35,6 +35,7 @@ if [ -n "${HOSTED_KERNEL:-}" ]; then
 	cp hosted/fki-ko/fki.ko hosted/xnu-ko/xnu.ko "$R/hosted/"
 	cp "$HOSTED_KERNEL" "$R/lib/firmware/xnu/kernel.macho"
 	install -m755 host/initramfs/xnu-run "$R/bin/xnu-run"
+	python3 host/mkadtprops.py "$R/lib/firmware/xnu/adtprops.bin"
 fi
 (cd "$R" && find . | cpio -o -H newc --quiet --owner=0:0 | gzip -9) > $W/initramfs.gz
 # the mainline SDM670 tree has no watchdog node; add the SoC's APSS watchdog (stock device tree address, as SDM845's mainline node) to a copy

@@ -886,6 +886,52 @@ index 7a32a23..776fcbe 100644
  	panic("Unable to find driver for this platform: \"%s\".",
  	    platform_name);
  
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 5d6b4e5..41c9a42 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -103,6 +103,9 @@ static int
+ sweet_rtc_read(uint32_t *secs)
+ {
+ 	uint8_t b[4], again;
++#if defined(SWEET_HOSTED)
++	return -1;	/* LINUX64: the PMIC is the host's */
++#endif
+ 	if (sweet_spmi_init() != 0) {
+ 		return -1;
+ 	}
+@@ -159,11 +162,23 @@ extern "C" void sweet_poke_start(void);
+ bool
+ SweetPlatformExpert::start(IOService *provider)
+ {
++#if !defined(SWEET_HOSTED)
+ 	sweet_log_mirror_start();       /* crash rescue: bsd/dev/sweet_ufs.c */
++#endif
+ 	IOLog("SWEET: starting device-tree platform expert\n");
+ 	if (!IODTPlatformExpert::start(provider)) {
+ 		return false;
+ 	}
++#if defined(SWEET_HOSTED)
++	/*
++	 * LINUX64: the watchdog, the PMIC bus and its RTC are the host's. This driver serves as the device-tree platform expert (hw.target and
++	 * hw.product from the root node); the time of day comes from the host (PEGetUTCTimeOfDay).
++	 */
++	publishResource("IORTC", this);
++	registerService();
++	IOLog("SWEET: platform expert registered (hosted)\n");
++	return true;
++#else
+ 	flame_wdt_start();
+ 	sweet_poke_start();             /* register scripts: bsd/dev/sweet_poke.c */
+ 	uint32_t rtc = 0;
+@@ -177,6 +192,7 @@ SweetPlatformExpert::start(IOService *provider)
+ 	registerService();
+ 	IOLog("SWEET: platform expert registered\n");
+ 	return true;
++#endif
+ }
+ 
+ const char *
 diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
 index e6c74aa..52f25ee 100644
 --- a/iokit/bsddev/IOKitBSDInit.cpp

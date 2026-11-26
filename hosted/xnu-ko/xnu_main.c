@@ -79,6 +79,9 @@ static const void *rd_data; static unsigned long rd_size; static void *rd_blob;
 /* The static trust cache a bootloader passes (raw trust cache module, e.g. the payload of the OS's StaticTrustCache.img4) */
 static char *trustcache;
 module_param(trustcache, charp, 0444);
+static char *adtprops;	/* a firmware blob of device-tree properties that replace or add to the built-in ones (host/mkadtprops.py) */
+module_param(adtprops, charp, 0444);
+static const void *ap_data; static unsigned long ap_size; static void *ap_blob;
 static const void *tc_data; static unsigned long tc_size; static void *tc_blob;
 #define TC_SEG_SIZE (tc_size ? tc_size + 8 : 0)	/* trust_cache_offsets_t { num_caches = 1, offsets[1] } + the module */
 /*
@@ -799,7 +802,9 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 	logkv("xnu: XNU CPUs", (u64_t)cpus);
 
 	adt_init(&a, base_va + off_dt, 0x40000);
+	a.extra = ap_data; a.extra_len = ap_size;
 	adt_node(&a, 3, 7);				/* / */
+	adt_extras(&a, "device-tree");
 	adt_prop_str(&a, "name", "device-tree");
 	{	/* the platform's own name, then the model: user space's product type (MobileGestalt) comes from this list */
 		static char compat[96];
@@ -821,6 +826,7 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 		x_memcpy(root_matching + sizeof(pre) - 1 + 36, post, sizeof(post));
 	}
 	adt_node(&a, 22 + (boot_uuid ? 1 : 0) + (preboot_uuid ? 1 : 0) + (root_matching[0] ? 1 : 0), 3);	/* /chosen */
+	adt_extras(&a, "chosen");
 	if (root_matching[0]) adt_prop_str(&a, "root-matching", root_matching);
 	if (boot_uuid) adt_prop_str(&a, "boot-uuid", boot_uuid);
 	if (preboot_uuid) adt_prop_str(&a, "apfs-preboot-uuid", preboot_uuid);
@@ -874,6 +880,7 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 	adt_node(&a, 1, 0);				/* /chosen/manifest-properties: AppleImage4 reads it (empty: no manifest) */
 	adt_prop_str(&a, "name", "manifest-properties");
 	adt_node(&a, 3, 0);				/* /chosen/asmb: the SIP configuration a bootloader passes (csr_bootstrap) */
+	adt_extras(&a, "asmb");
 	adt_prop_str(&a, "name", "asmb");
 	adt_prop_u64(&a, "lp-sip0", 0x2);		/* CSR_ALLOW_UNTRUSTED_KEXTS, as DroidVM boots */
 	adt_prop_u32(&a, "lp-sip1", 1);			/* CSR_ALLOW_UNAUTHENTICATED_ROOT */
@@ -896,8 +903,10 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 		/* no cluster-type: this kernel has one SMP cluster (MAX_CPU_CLUSTER_PHY_ID 0); a "P" cluster asserts */
 	}
 	adt_node(&a, 1, 0);				/* /defaults: XNU looks these up without checking */
+	adt_extras(&a, "defaults");
 	adt_prop_str(&a, "name", "defaults");
 	adt_node(&a, 4 + (soc_name && soc_name[0] ? 1 : 0), 0);	/* /product */
+	adt_extras(&a, "product");
 	adt_prop_str(&a, "name", "product");
 	/*
 	 * MobileGestalt's product type in sandboxed processes: their profiles let them read only these two /product
@@ -1337,6 +1346,11 @@ static int __init xnu_init(void)
 		err = fki_blob_get(trustcache, &tc_data, &tc_size, &tc_blob);
 		if (err) { logkv("xnu: cannot read the trust cache, err", (u64_t)err); return err; }
 	}
+	if (adtprops) {
+		err = fki_blob_get(adtprops, &ap_data, &ap_size, &ap_blob);
+		if (err) { logkv("xnu: cannot read the device-tree properties, err", (u64_t)err); return err; }
+		logkv("xnu: outside device-tree properties, bytes", ap_size);
+	}
 	if (console_in) {
 		fki_u64 sz = 0;
 		ci_file = fki_file_open(console_in, 0, &sz);
@@ -1395,6 +1409,7 @@ static void __exit xnu_exit(void)
 	if (blob) fki_blob_put(blob);
 	if (rd_blob) fki_blob_put(rd_blob);
 	if (tc_blob) fki_blob_put(tc_blob);
+	if (ap_blob) fki_blob_put(ap_blob);
 	if (hd_file) fki_file_close(hd_file);
 	if (ks_file) fki_file_close(ks_file);
 	if (dk_file) fki_file_close(dk_file);
