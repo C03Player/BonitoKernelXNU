@@ -896,6 +896,7 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 		cname[c][0] = 'c'; cname[c][1] = 'p'; cname[c][2] = 'u';
 		if (c < 10) { cname[c][3] = '0' + c; cname[c][4] = 0; } else { cname[c][3] = '1'; cname[c][4] = '0' + c - 10; cname[c][5] = 0; }
 		adt_node(&a, 5, 0);
+		adt_extras(&a, cname[c]);
 		adt_prop_str(&a, "name", cname[c]);
 		adt_prop_str(&a, "compatible", "xnulinux,cpu");
 		adt_prop_str(&a, "state", c ? "waiting" : "running");

@@ -886,6 +886,32 @@ index 7a32a23..776fcbe 100644
  	panic("Unable to find driver for this platform: \"%s\".",
  	    platform_name);
  
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index 2545cf9..4fda01b 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -206,6 +206,10 @@ SweetCPU::initCPU(bool boot)
+ 	__atomic_store_n(&initialized, 1, __ATOMIC_RELEASE);
+ }
+ 
++#if defined(SWEET_HOSTED)
++extern "C" void linux64_cpu_signal(unsigned int cpu);
++#endif
++
+ void
+ SweetCPU::signalCPU(IOCPU *target)
+ {
+@@ -214,6 +218,10 @@ SweetCPU::signalCPU(IOCPU *target)
+ 	if (logical >= topology->num_cpus) {
+ 		panic("SWEET CPU: invalid SGI target %u", logical);
+ 	}
++#if defined(SWEET_HOSTED)
++	linux64_cpu_signal(logical);	/* LINUX64: the interrupt controller is the host's: it marks the IPI and kicks that CPU */
++	return;
++#endif
+ 	/* Use the TARGET affinity, including Aff1, never the sender's MPIDR. */
+ 	uint64_t mpidr = topology->cpus[logical].phys_id;
+ 	unsigned int aff0 = mpidr & 0xff;
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 index 58b5644..377bb52 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp

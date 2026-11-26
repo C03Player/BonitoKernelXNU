@@ -35,6 +35,8 @@ for node, keys in (('device-tree', ('model', 'target-type', 'target-sub-type', '
     out += [(node, k, p[k]) for k in keys]
 if 'product' not in find:
     sys.exit('no /product node: bonito/research/ipsw-x/d22ap.adt is missing')
+# CPUs: the direct port's CPU driver (SweetCPU, IONameMatch qcom,kryo470) registers them; xnu.ko writes name, reg (MPIDR) and state
+out += [('cpu%d' % i, 'compatible', cstr('qcom,kryo470') + cstr('ARM,v8')) for i in range(8)]
 out += [('product', k, v) for k, v in props('product').items() if k not in ('name', 'AAPL,phandle')]
 with open(sys.argv[1], 'wb') as f:
     for node, k, v in out:
