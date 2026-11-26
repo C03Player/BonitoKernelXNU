@@ -1003,6 +1003,111 @@ index c5e2d5c..f31bc4a 100644
  	if (s->memory == NULL || !sweet_surface_publish(s)) {
  		s->release();
  		return NULL;
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index ae562be..cc7f82f 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -29,6 +29,7 @@
+ #include "IOHIDPrivateKeys.h"
+ #include "IOHIDUsageTables.h"
+ #include "../SweetDisplayMask.h"
++#include <pexpert/arm64/board_config.h>
+ 
+ extern "C" uint64_t mach_absolute_time(void);
+ 
+@@ -432,6 +433,10 @@ SweetHIDButtons::testFired(OSObject *owner, IOTimerEventSource *sender)
+ 	}
+ }
+ 
++#if defined(SWEET_HOSTED)
++static void sweet_hid_host_thread(void *arg);
++#endif
++
+ bool
+ SweetHIDTouch::start(IOService *provider)
+ {
+@@ -457,6 +462,13 @@ SweetHIDTouch::start(IOService *provider)
+ 	gSweetTouch = this;
+ 	registerService();
+ 	IOLog("SWEET HID: touch registered\n");
++#if defined(SWEET_HOSTED)
++	{
++		if (IOCreateThread(sweet_hid_host_thread, NULL) != NULL) {
++			IOLog("SWEET HID: input from the host\n");
++		}
++	}
++#endif
+ 	return true;
+ }
+ 
+@@ -581,6 +593,67 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ }
+ 
+ /* key: 0 power (side button), 1 volume up, 2 volume down, 3 home */
++#if defined(SWEET_HOSTED)
++/*
++ * LINUX64: the touchscreen and the buttons are the host's. Linux's input events arrive as 8-byte records (type, code, value: struct
++ * linux64_input_event, written by host/evrelay.c into xnu.ko's input_in), multitouch protocol B with coordinates already in panel pixels.
++ */
++extern "C" long linux64_input_read(void *buffer, unsigned long size);
++extern "C" void sweet_hid_key(int key, int down);
++extern "C" void sweet_hid_touch(int finger, int down, int x, int y);
++struct sweet_host_ev { uint16_t type, code; int32_t value; };
++
++static void
++sweet_hid_host_thread(void *arg __unused)
++{
++	enum { EV_SYN = 0, EV_KEY = 1, EV_ABS = 3, SYN_REPORT = 0, ABS_MT_SLOT = 0x2f, ABS_MT_POSITION_X = 0x35, ABS_MT_POSITION_Y = 0x36,
++	       ABS_MT_TRACKING_ID = 0x39, KEY_VOLUMEDOWN = 114, KEY_VOLUMEUP = 115, KEY_POWER = 116 };
++	static struct sweet_host_ev ev[64];
++	int slot = 0, x[SWEET_TOUCH_FINGERS] = {}, y[SWEET_TOUCH_FINGERS] = {};
++	bool down[SWEET_TOUCH_FINGERS] = {}, was[SWEET_TOUCH_FINGERS] = {}, moved[SWEET_TOUCH_FINGERS] = {};
++
++	for (;;) {
++		long n = linux64_input_read(ev, sizeof(ev));
++		if (n <= 0) {
++			IOSleep(8);
++			continue;
++		}
++		for (long i = 0; i < n / (long)sizeof(ev[0]); i++) {
++			const struct sweet_host_ev *e = &ev[i];
++			if (e->type == EV_KEY && e->value != 2) {
++				int k = e->code == KEY_POWER ? 0 : e->code == KEY_VOLUMEUP ? 1 : e->code == KEY_VOLUMEDOWN ? 2 : -1;
++				if (k >= 0) {
++					sweet_hid_key(k, e->value != 0);
++				}
++			} else if (e->type == EV_ABS) {
++				if (e->code == ABS_MT_SLOT) {
++					slot = e->value;
++				} else if (slot >= 0 && slot < SWEET_TOUCH_FINGERS) {
++					if (e->code == ABS_MT_TRACKING_ID) {
++						down[slot] = e->value >= 0;
++						moved[slot] = true;
++					} else if (e->code == ABS_MT_POSITION_X) {
++						x[slot] = e->value;
++						moved[slot] = true;
++					} else if (e->code == ABS_MT_POSITION_Y) {
++						y[slot] = e->value;
++						moved[slot] = true;
++					}
++				}
++			} else if (e->type == EV_SYN && e->code == SYN_REPORT) {
++				for (int f = 0; f < SWEET_TOUCH_FINGERS; f++) {
++					if (moved[f] && (down[f] || was[f])) {
++						sweet_hid_touch(f, down[f], x[f], y[f]);
++					}
++					was[f] = down[f];
++					moved[f] = false;
++				}
++			}
++		}
++	}
++}
++#endif
++
+ extern "C" void
+ sweet_hid_key(int key, int down)
+ {
 diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
 index e6c74aa..52f25ee 100644
 --- a/iokit/bsddev/IOKitBSDInit.cpp
