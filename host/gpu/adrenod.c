@@ -91,9 +91,14 @@ static int do_unmap(uint64_t iova, uint64_t len)
 	return found ? 0 : -ENOENT;
 }
 
+/*
+ * msm maps a buffer into the GPU's page tables only while a submit lists it (MSM_INFO_SET_IOVA just reserves the address; test hosted29:
+ * translation faults on render targets). So every live buffer goes into every submit, the command buffers first.
+ */
+static struct drm_msm_gem_submit_bo bos[MAX_MAPS];
+
 static int do_submit(const struct agpu_ib *ib, uint32_t n, uint64_t *fence)
 {
-	struct drm_msm_gem_submit_bo bos[AGPU_MAX_IBS];
 	struct drm_msm_gem_submit_cmd cmds[AGPU_MAX_IBS];
 	uint32_t nbos = 0;
 
@@ -108,11 +113,19 @@ static int do_submit(const struct agpu_ib *ib, uint32_t n, uint64_t *fence)
 		for (idx = 0; idx < nbos && bos[idx].handle != m->handle; idx++)
 			;
 		if (idx == nbos)
-			bos[nbos++] = (struct drm_msm_gem_submit_bo){ .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_NO_IMPLICIT, .handle = m->handle };
+			bos[nbos++] = (struct drm_msm_gem_submit_bo){ .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE, .handle = m->handle };
 		cmds[i].type = MSM_SUBMIT_CMD_BUF;
 		cmds[i].submit_idx = idx;
 		cmds[i].submit_offset = (uint32_t)(ib[i].iova - m->iova);
 		cmds[i].size = ib[i].dwords * 4;
+	}
+	uint32_t ncmd = nbos;
+	for (unsigned i = 0; i < nmaps; i++) {
+		uint32_t j;
+		for (j = 0; j < ncmd && bos[j].handle != maps[i].handle; j++)
+			;
+		if (j == ncmd)
+			bos[nbos++] = (struct drm_msm_gem_submit_bo){ .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE, .handle = maps[i].handle };
 	}
 	struct drm_msm_gem_submit s = {
 		.flags = MSM_PIPE_3D0 | MSM_SUBMIT_NO_IMPLICIT, .nr_bos = nbos, .nr_cmds = n,
