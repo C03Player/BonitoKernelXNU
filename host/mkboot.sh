@@ -13,6 +13,8 @@ R=$W/root
 rm -rf "$R"
 mkdir -p "$R"/{bin,proc,sys,dev,etc} "$(dirname "$IMG")"
 cp "$(command -v busybox)" "$R/bin/busybox"
+echo "root:x:0:0:root:/:/bin/sh" > "$R/etc/passwd"
+echo "root:x:0:" > "$R/etc/group"
 ln -s busybox "$R/bin/sh"
 install -m755 host/initramfs/init "$R/init"
 install -m755 host/initramfs/report "$R/bin/report"
@@ -44,7 +46,7 @@ if [ -d "$WU/root" ] && [ -f "$MF/wlanmdsp.mbn" ]; then
 	mkdir -p "$L" "$R/lib/firmware/ath10k/WCN3990/hw1.0"
 	for b in usr/bin/rmtfs usr/bin/tqftpserv sbin/iw sbin/wpa_supplicant usr/bin/wpa_passphrase; do cp "$WU/root/$b" "$R/bin/"; done
 	# the libraries they need, from the unpacked packages first and this machine otherwise
-	for i in 1 2 3; do
+	for i in 1 2 3 4 5 6 7 8; do
 		for n in $(objdump -p "$R"/bin/{rmtfs,tqftpserv,iw,wpa_supplicant,dnsmasq,nft} "$L"/* 2>/dev/null | awk '/NEEDED/ {print $2}' | sort -u); do
 			[ -e "$L/$n" ] && continue
 			src=$(find "$WU/root" /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu -name "$n" 2>/dev/null | head -n 1)

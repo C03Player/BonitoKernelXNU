@@ -344,10 +344,10 @@ index 0000000..f31b91c
 +#endif
 diff --git a/bsd/dev/linux64_net_link.c b/bsd/dev/linux64_net_link.c
 new file mode 100644
-index 0000000..1c37284
+index 0000000..833cbe6
 --- /dev/null
 +++ b/bsd/dev/linux64_net_link.c
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,67 @@
 +/*
 + * LINUX64: en0 over the host's xnu0 (fki.ko's virtual Ethernet device): Linux owns the radio, gives DHCP and DNS on xnu0 and NATs
 + * (docs/NETWORK.md). The interface is bsd/dev/redwood_net.c's; this is its link driver. Boot-arg linux64net=1.
@@ -362,6 +362,8 @@ index 0000000..1c37284
 +#if defined(SWEET_HOSTED)
 +extern long linux64_net_send(const void *frame, unsigned long length);
 +extern long linux64_net_recv(void *buffer, unsigned long size);
++
++extern void MiniIONetworkStackStart(void);      /* iokit/Kernel/arm/MiniIONetworkStack.cpp */
 +
 +static uint8_t l64_tx[REDWOOD_NET_FRAME_MAX], l64_rx[2048];
 +
@@ -408,6 +410,8 @@ index 0000000..1c37284
 +
 +	if (PE_parse_boot_argn("linux64net", &on, sizeof(on)) && on) {
 +		redwood_net_attach(&l64_link);
++		/* configd's interface namer waits for it before it configures any interface (the direct port starts it from its radio) */
++		MiniIONetworkStackStart();
 +	}
 +#endif
 +}
