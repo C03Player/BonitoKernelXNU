@@ -1,0 +1,40 @@
+#!/bin/sh
+# wifi-up [scan]: start the modem and the WCN3990 Wi-Fi on the Linux host, up to wlan0 (docs/NETWORK.md).
+# Nothing on the phone is written: partitions are read only (set read-only first), and the modem's storage is a copy in RAM.
+F=/lib/firmware/qcom/sdm670/sargo
+part() {	# partition name -> device node
+	for u in /sys/class/block/*/uevent; do
+		if grep -qx "PARTNAME=$1" "$u"; then echo "/dev/$(sed -n 's/^DEVNAME=//p' "$u")"; return 0; fi
+	done
+	echo "wifi-up: no partition $1" >&2
+	return 1
+}
+P=$(part modem_a) || exit 1
+if ! grep -q ' /mnt/modem ' /proc/mounts; then
+	mkdir -p /mnt/modem && blockdev --setro "$P" && mount -t vfat -o ro "$P" /mnt/modem || exit 1
+fi
+mkdir -p $F /tmp/rmtfs
+ln -sf /mnt/modem/image/mba.mbn $F/mba.mbn
+ln -sf /mnt/modem/image/modem.mdt $F/modem.mbn
+for b in /mnt/modem/image/modem.b*; do ln -sf "$b" $F/; done
+for n in modemst1:modem_fs1 modemst2:modem_fs2 fsg:modem_fsg fsc:modem_fsc; do
+	[ -s /tmp/rmtfs/${n#*:} ] && continue
+	D=$(part ${n%:*}) || exit 1
+	blockdev --setro "$D" && dd if="$D" of=/tmp/rmtfs/${n#*:} bs=1M 2>/dev/null || exit 1
+done
+for m in qcom_glink_smem qrtr qrtr-smd rmtfs_mem qcom_pd_mapper qcom_q6v5_mss ath10k_snoc; do modprobe -q $m || echo "wifi-up: module $m failed"; done
+# the drivers probed at boot before qrtr was there ("failed to initialize qmi handle"): probe them again
+for d in 4080000.remoteproc 18800000.wifi; do [ -e /sys/bus/platform/devices/$d/driver ] || echo $d > /sys/bus/platform/drivers_probe; done
+pidof tqftpserv > /dev/null || setsid tqftpserv > /tmp/tqftpserv.log 2>&1 < /dev/null &
+pidof rmtfs > /dev/null || setsid rmtfs -v -o /tmp/rmtfs > /tmp/rmtfs.log 2>&1 < /dev/null &
+sleep 2
+for r in /sys/class/remoteproc/remoteproc*; do
+	case "$(cat $r/name)" in
+	*4080000*|*mss*|*modem*) [ "$(cat $r/state)" = running ] || echo start > $r/state; echo "modem: $(cat $r/state)" ;;
+	esac
+done
+for i in $(seq 40); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
+[ -e /sys/class/net/wlan0 ] || { echo "wifi-up: no wlan0"; exit 1; }
+ip link set wlan0 up || exit 1
+echo "wlan0 up"
+[ "$1" = scan ] && iw dev wlan0 scan | grep -c '^BSS'

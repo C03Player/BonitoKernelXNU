@@ -1,0 +1,9 @@
+#!/bin/sh
+# wifi-join CONF: join the network of a wpa_supplicant configuration file (it holds the password: keep it in RAM, never in Git), then DHCP.
+[ -s "$1" ] || { echo "usage: wifi-join wpa_supplicant.conf"; exit 2; }
+[ -e /sys/class/net/wlan0 ] || wifi-up || exit 1
+killall wpa_supplicant udhcpc 2>/dev/null
+wpa_supplicant -B -D nl80211 -i wlan0 -c "$1" -f /tmp/wpa.log || exit 1
+udhcpc -i wlan0 -n -q -t 15 -T 2 -s /etc/udhcpc.sh || { echo "wifi-join: no address"; tail -n 5 /tmp/wpa.log; exit 1; }
+ip -4 addr show wlan0 | sed -n 's/.*inet /address /p'
+ping -c 2 -W 3 deb.debian.org > /dev/null 2>&1 && echo "internet: yes" || echo "internet: no"

@@ -30,6 +30,34 @@ F=$R/lib/firmware/qcom
 mkdir -p "$F/sdm670/sargo"
 cp "$G/a630_sqe.fw" "$G/a630_gmu.bin" "$F/"
 cp "$G/a615_zap.elf" "$F/sdm670/sargo/a615_zap.mbn"
+# Wi-Fi on the host (host/initramfs/wifi-up): the modem helpers and tools from Debian packages unpacked under WIFIUSER/root,
+# the driver firmware in WIFIUSER/fw, and the WLAN firmware from the phone's own images (local only, never committed)
+WU=${WIFIUSER:-/usb/work/linux/wifi-userland}
+MF=${MODEMFW:-/usb/work/modem/fw}
+if [ -d "$WU/root" ] && [ -f "$MF/wlanmdsp.mbn" ]; then
+	install -m755 host/initramfs/wifi-up "$R/bin/wifi-up"
+	install -m755 host/initramfs/wifi-join "$R/bin/wifi-join"
+	install -m755 host/initramfs/udhcpc.sh "$R/etc/udhcpc.sh"
+	L=$R/lib/aarch64-linux-gnu
+	mkdir -p "$L" "$R/lib/firmware/ath10k/WCN3990/hw1.0"
+	for b in usr/bin/rmtfs usr/bin/tqftpserv sbin/iw sbin/wpa_supplicant usr/bin/wpa_passphrase; do cp "$WU/root/$b" "$R/bin/"; done
+	# the libraries they need, from the unpacked packages first and this machine otherwise
+	for i in 1 2 3; do
+		for n in $(objdump -p "$R"/bin/{rmtfs,tqftpserv,iw,wpa_supplicant} "$L"/* 2>/dev/null | awk '/NEEDED/ {print $2}' | sort -u); do
+			[ -e "$L/$n" ] && continue
+			src=$(find "$WU/root" /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu -name "$n" 2>/dev/null | head -n 1)
+			[ -n "$src" ] || { echo "no library $n"; exit 1; }
+			cp -L "$src" "$L/$n"
+		done
+	done
+	cp "$L/ld-linux-aarch64.so.1" "$R/lib/ld-linux-aarch64.so.1"
+	cp "$WU/root/lib/firmware/regulatory.db-upstream" "$R/lib/firmware/regulatory.db"
+	cp "$WU/root/lib/firmware/regulatory.db.p7s-upstream" "$R/lib/firmware/regulatory.db.p7s"
+	cp "$WU/fw/firmware-5.bin" "$R/lib/firmware/ath10k/WCN3990/hw1.0/"
+	cp "$MF/bdwlan-bonito.bin" "$R/lib/firmware/ath10k/WCN3990/hw1.0/board.bin"
+	mkdir -p "$F/sdm670/sargo"
+	cp "$MF/wlanmdsp.mbn" "$F/sdm670/sargo/"
+fi
 # GPU test userland (host/gpu-userland.py), when it has been assembled
 [ -d $W/gpu ] && cp -a $W/gpu "$R/gpu"
 # hosted XNU: the two modules (built in hosted/) and the kernel image (HOSTED_KERNEL=path of kernel.development.sweet from a hosted CI run)
