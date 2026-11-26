@@ -266,6 +266,19 @@ index 0000000..5d0db6d
 +};
 +
 +#endif /* _LINUX64_ABI_H_ */
+diff --git a/bsd/dev/sweet_pmem.c b/bsd/dev/sweet_pmem.c
+index d405964..3033246 100644
+--- a/bsd/dev/sweet_pmem.c
++++ b/bsd/dev/sweet_pmem.c
+@@ -89,7 +89,7 @@ static struct {
+ 	uint64_t win;
+ } pm_map[PMEM_MAPS];
+ static unsigned pm_map_next;
+-static uint32_t pm_bounce[PAGE_SIZE / 4];
++static uint32_t pm_bounce[PAGE_MAX_SIZE / 4];	/* LINUX64: PAGE_SIZE is a variable on 4 KB-granule builds */
+ 
+ static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
+ static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
 diff --git a/libkern/crypto/corecrypto_rand.c b/libkern/crypto/corecrypto_rand.c
 index d46815b..acea296 100644
 --- a/libkern/crypto/corecrypto_rand.c
@@ -673,21 +686,10 @@ index a6af1b9..85babed 100644
  		max_cpus_initialized = MAX_CPUS_WAIT;
  		lck_mtx_sleep(&max_cpus_lock, LCK_SLEEP_DEFAULT, &max_cpus_initialized, THREAD_UNINT);
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
-index bd099f8..da8b604 100644
+index bd099f8..42bef77 100644
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
-@@ -3229,6 +3229,10 @@ pmap_destroy_internal(
- 
- 
- 
-+	if (pmap->hw_tte == pmap->tte) {
-+		pmap->hw_tte = (tt_entry_t *) NULL;   /* LINUX64: a level-0 root is both; free it once, below */
-+		pmap->hw_ttep = 0;
-+	}
- 	if (pmap->tte) {
- 		pmap_tt1_deallocate(pmap, pmap->tte, pmap_root_alloc_size(pmap), 0);
- 		pmap->tte = (tt_entry_t *) NULL;
-@@ -10075,8 +10079,12 @@ pmap_cache_attributes(
+@@ -10075,8 +10075,12 @@ pmap_cache_attributes(
  	assert(vm_last_phys > vm_first_phys); // Check that pmap has been bootstrapped
  
  	if (!pa_valid(paddr)) {
@@ -919,7 +921,7 @@ index b082a10..e3888db 100644
  
  	return KERN_SUCCESS;
 diff --git a/osfmk/arm64/cswitch.s b/osfmk/arm64/cswitch.s
-index c08a994..8ce5a08 100644
+index c08a994..27dd1ca 100644
 --- a/osfmk/arm64/cswitch.s
 +++ b/osfmk/arm64/cswitch.s
 @@ -175,15 +175,13 @@
@@ -984,7 +986,7 @@ index c08a994..8ce5a08 100644
  	ldr		x1, [x0, TH_KSTACKPTR]				// Get the top of the kernel stack
  	load_general_registers	x1, 2
  	set_process_dependent_keys_and_sync_context	x0, x1, x2, x3, w4
-@@ -397,3 +395,199 @@ LEXT(machine_set_current_thread)
+@@ -397,3 +395,198 @@ LEXT(machine_set_current_thread)
  
  
  /* vim: set ts=4: */
@@ -1005,9 +1007,8 @@ index c08a994..8ce5a08 100644
 +	.align 2
 +	.globl EXT(linux64_el0_run)
 +LEXT(linux64_el0_run)
-+	ARM64_PROLOG
 +	mrs		x11, TPIDRRO_EL0						// this CPU's thread
-+	LOAD_KERN_STACK_TOP	dst=x12, src=x11, tmp=x13
++	ldr		x12, [x11, TH_KSTACKPTR]			// top of the kernel stack (the context switch save area sits there)
 +	sub		x15, x12, #LINUX64_EL0_BLOCK
 +	str		x11, [x15, #0]
 +	mrs		x10, SP_EL0
@@ -1857,17 +1858,17 @@ index d7a25f2..5d70f0e 100644
  
  #endif
 diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
-index c86b9e7..b1c831f 100644
+index c86b9e7..27dedd6 100644
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
-@@ -27,6 +27,7 @@
-  */
+@@ -35,6 +35,7 @@
+ #include <i386/serial_io.h>
+ #endif /* __x86_64__ */
  
- #ifdef __x86_64__
 +#include <linux64/linux64.h>
- #include <i386/mp.h>
- #include <i386/cpu_data.h>
- #include <i386/bit_routines.h>
+ #include <machine/machine_cpu.h>
+ #include <libkern/OSAtomic.h>
+ #include <vm/vm_kern.h>
 @@ -531,6 +532,12 @@ console_write(char *str, int size)
  {
  	assert(str != NULL);
@@ -2316,6 +2317,20 @@ index 13f292a..82717bf 100644
  	        );                                                              \
  	        ml_pac_safe_interrupts_restore(_intr);                          \
  	} while (0)
+diff --git a/osfmk/mach/arm/vm_param.h b/osfmk/mach/arm/vm_param.h
+index c013288..c7451d6 100644
+--- a/osfmk/mach/arm/vm_param.h
++++ b/osfmk/mach/arm/vm_param.h
+@@ -133,7 +133,8 @@ extern int PAGE_SHIFT_CONST;
+ 
+ /* system-wide values */
+ #define MACH_VM_MIN_ADDRESS_RAW 0x0ULL
+-#if defined(XNU_PLATFORM_MacOSX) || defined(XNU_PLATFORM_DriverKit)
++/* LINUX64: the hosted kernel's 4 KB-granule user tables span 39 bits: the iOS address space (what its userland is built for) */
++#if (defined(XNU_PLATFORM_MacOSX) || defined(XNU_PLATFORM_DriverKit)) && !defined(ARM64_BOARD_CONFIG_SWEET)
+ #define MACH_VM_MAX_ADDRESS_RAW 0x00007FFFFE000000ULL
+ #else
+ #define MACH_VM_MAX_ADDRESS_RAW 0x0000000FC0000000ULL
 diff --git a/osfmk/prng/prng_random.c b/osfmk/prng/prng_random.c
 index c53d45d..3281632 100644
 --- a/osfmk/prng/prng_random.c
