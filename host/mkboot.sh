@@ -17,6 +17,7 @@ ln -s busybox "$R/bin/sh"
 install -m755 host/initramfs/init "$R/init"
 install -m755 host/initramfs/report "$R/bin/report"
 gcc -static -Os -s -o "$R/bin/rebootto" host/rebootto.c
+gcc -static -O2 -s -o "$R/bin/fbcopy" host/fbcopy.c
 make -s -C "$SRC" O="$K" ARCH=arm64 INSTALL_MOD_PATH="$PWD/$R" INSTALL_MOD_STRIP=1 modules_install >/dev/null
 # drop module trees that gate 1 does not need, to fit the 64 MiB boot partition
 for d in sound drivers/media/{usb,pci,i2c,platform,dvb-frontends,tuners} drivers/infiniband drivers/net/ethernet drivers/staging fs/xfs fs/btrfs fs/nfs fs/smb; do rm -rf "$R"/lib/modules/*/kernel/$d; done

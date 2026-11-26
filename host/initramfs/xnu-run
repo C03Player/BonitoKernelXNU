@@ -14,7 +14,7 @@ if [ "$H" = "H+" ] || [ "$H" = "HX" ]; then
 	blockdev --setro "$D" || exit 1
 	if [ ! -e /dev/mapper/iosroot ]; then
 		modprobe -q dm-mod; modprobe -q dm-snapshot
-		mkdir -p /cow && mount -t tmpfs -o size=500m cow /cow && truncate -s 500m /cow/iosroot && losetup /dev/loop0 /cow/iosroot || exit 1
+		mkdir -p /cow && mount -t tmpfs -o size=512m cow /cow && truncate -s 524288000 /cow/iosroot && losetup /dev/loop0 /cow/iosroot || exit 1
 		DM="/dm/ld-linux-aarch64.so.1 --library-path /dm /dm/dmsetup"
 		DM_DISABLE_UDEV=1 $DM create iosroot --noudevsync --table "0 $(blockdev --getsz "$D") snapshot $D /dev/loop0 N 8" || exit 1
 		[ -e /dev/mapper/iosroot ] || { echo "no snapshot device"; exit 1; }
@@ -28,6 +28,11 @@ A="keepsyms=1 serial=0 rootrw=1 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unen
 # the hosted display: a framebuffer in XNU's memory, copied to the host's fb0 (the text console lets go of it first)
 for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" $v/name 2>/dev/null && echo 0 > $v/bind; done
 F=
-[ -c /dev/fb0 ] && F="fb_width=1080 fb_height=2160 fb_dump=/dev/fb0 fb_dump_ms=100"
+# (Linux's fbdev has no write path for kernel buffers: xnu.ko writes the frames to a file in RAM, fbcopy shows them)
+if [ -c /dev/fb0 ]; then
+	: > /tmp/xnufb
+	F="fb_width=1080 fb_height=2160 fb_dump=/tmp/xnufb fb_dump_ms=100"
+	pidof fbcopy > /dev/null || setsid fbcopy /tmp/xnufb > /dev/null 2>&1 < /dev/null &
+fi
 setsid insmod /hosted/xnu.ko $F image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=1 ram_mb=1536 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
 echo started

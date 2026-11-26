@@ -49,9 +49,15 @@ Kernel layout of the hosted build: link address `0xfffffff007004000` (not large 
   `configd`, `notifyd`, `runningboardd`, `lsd`, `mediaserverd`, `backboardd` and `SpringBoard`; about 940,000 user-mode exceptions in 70 s, no kernel panic.
   Crashing (abort/trap, causes not examined): `backupd`, `analyticsd`, `lockdownd`, `backboardd` (twice), `driverkitd`. Nothing is shown on the screen: the hosted system has no framebuffer driver yet.
 
+- hosted11-15: writable root as a RAM snapshot of the read-only partition (`dm-snapshot`, changes lost at reboot); display. `xnu.ko` could not write `/dev/fb0`
+  (fbdev has no write path for kernel buffers), so it writes frames to `/tmp/xnufb` and `host/fbcopy.c` copies them to `fb0` (whose rows are 4352 bytes).
+- **hosted16 (2026-11-26): the iOS lock screen is on the phone's screen**, drawn by iOS running inside Linux: clock, date, battery, camera button, then the wallpaper
+  (`logs/hosted16-160.png`, not committed: Apple artwork). First frames about 85 s after loading, wallpaper after about 145 s, CPU rendering on one core.
+  The date was 1970-01-31: the platform expert's time of day was a stub when hosted (fixed, not yet tested).
+
 ## Next
-1. Display: a framebuffer for the hosted system that Linux shows (`xnu.ko` `fb_width`/`fb_height`/`fb_dump`, boot-args `Video`; `SweetFramebuffer` or its replacement over it).
-2. Find why the crashing daemons abort; compare with the direct port's logs.
-3. A writable root without touching the fallback port's image (copy-on-write on the Linux side).
-4. Input, network, GPU (a bridge to the host's driver), more CPUs (IPIs: `cpus=1` so far).
+1. Touch and buttons (Linux input events to the hosted system), so the lock screen can be unlocked.
+2. Speed: more CPUs (IPIs; `cpus=1` so far), then GPU (a bridge to the host's msm/Turnip driver).
+3. Network through the host (`fki_net_*`), and a persistent writable root.
+4. The crashing daemons (`backupd`, `analyticsd`, `lockdownd`, `backboardd` restarts).
 5. Memory: the XNU region comes from a CMA area at 0x100000000 (`cma=1700M@0x100000000`).

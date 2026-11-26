@@ -96,6 +96,7 @@ static char *fb_dump;
 module_param(fb_dump, charp, 0444);
 static int fb_dump_ms = 1000;
 module_param(fb_dump_ms, int, 0444);
+static void *fb_file;	/* opened while loading: a helper thread of a 7.x host has an empty file system root */
 static u64_t fb_off;	/* the framebuffer's offset in the contiguous region (its Linux address: img.region.va + fb_off) */
 #define FB_SIZE (fb_width > 0 && fb_height > 0 ? (u64_t)fb_width * fb_height * 4 : 0)
 #define BOOT_EXTRA (((rd_size + 0x3fff) & ~0x3fffULL) + ((TC_SEG_SIZE + 0x3fff) & ~0x3fffULL) + ((FB_SIZE + 0x3fff) & ~0x3fffULL))
@@ -1154,14 +1155,12 @@ static int monitor_fn(void *arg)
 static void *fb_thread;
 static int fb_fn(void *arg)
 {
-	void *f = fki_file_open(fb_dump, 1, 0);
+	void *f = fb_file;
 	(void)arg;
-	if (!f) { logs("xnu: cannot open fb_dump (create the file first)"); return 0; }
 	while (!fki_thread_should_stop()) {
 		fki_msleep(fb_dump_ms);
 		fki_file_pwrite(f, (unsigned char *)img.region.va + fb_off, FB_SIZE, 0);
 	}
-	fki_file_close(f);
 	return 0;
 }
 
@@ -1200,7 +1199,7 @@ static int enter_arm_init(struct boot_args_v2 *ba)
 			monitor_cpu = host_cpu;
 		if (xnu_dbg && monitor_cpu >= 0)
 			monitor = fki_thread_start(monitor_fn, 0, monitor_cpu, "xnu-monitor");
-		if (fb_off && fb_dump && fb_dump_ms > 0 && img.region.va)
+		if (fb_off && fb_file && fb_dump_ms > 0 && img.region.va)
 			fb_thread = fki_thread_start(fb_fn, 0, monitor_cpu >= 0 ? monitor_cpu : host_cpu, "xnu-fb");
 	}
 	xnu_kfault = (void *)macho_sym(&img, "_linux64_kernel_fault");
@@ -1350,6 +1349,10 @@ static int __init xnu_init(void)
 		if (err) { logkv("xnu: cannot read the device-tree properties, err", (u64_t)err); return err; }
 		logkv("xnu: outside device-tree properties, bytes", ap_size);
 	}
+	if (fb_dump) {
+		fb_file = fki_file_open(fb_dump, 1, 0);
+		if (!fb_file) logs("xnu: cannot open fb_dump (create the file first)");
+	}
 	if (console_in) {
 		fki_u64 sz = 0;
 		ci_file = fki_file_open(console_in, 0, &sz);
@@ -1410,6 +1413,7 @@ static void __exit xnu_exit(void)
 	if (tc_blob) fki_blob_put(tc_blob);
 	if (ap_blob) fki_blob_put(ap_blob);
 	if (hd_file) fki_file_close(hd_file);
+	if (fb_file) fki_file_close(fb_file);
 	if (ks_file) fki_file_close(ks_file);
 	if (dk_file) fki_file_close(dk_file);
 	if (ci_file) fki_file_close(ci_file);
