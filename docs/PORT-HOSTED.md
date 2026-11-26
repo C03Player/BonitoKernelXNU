@@ -55,6 +55,12 @@ Kernel layout of the hosted build: link address `0xfffffff007004000` (not large 
   (`logs/hosted16-160.png`, not committed: Apple artwork). First frames about 85 s after loading, wallpaper after about 145 s, CPU rendering on one core.
   The date was 1970-01-31: the platform expert's time of day was a stub when hosted (fixed, not yet tested).
 
+- hosted17-19: touch and buttons from Linux (`host/evrelay.c` relays evdev into `input_in`; `SweetHID` reads it with a kernel thread):
+  iOS opens the touch and button services and receives touches (`SWEET HID: touch 0 up at 540,700`; injected with `host/touch.py`).
+  **Two CPUs** (`XNU_CPUS=2`): the direct port's `SweetCPU` registers them (device-tree CPU nodes from `mkadtprops.py`), IPIs through the host.
+  The lock screen animation reached 24.6 swaps/s on one CPU. hosted19 ended after 180 s with an assert in the corpse footprint
+  code (`vm_map.c`, pageable kernel memory); footprint collection is now skipped when hosted (not yet tested).
+
 ## Next
 1. Touch and buttons (Linux input events to the hosted system), so the lock screen can be unlocked.
 2. Speed: more CPUs (IPIs; `cpus=1` so far), then GPU (a bridge to the host's msm/Turnip driver).

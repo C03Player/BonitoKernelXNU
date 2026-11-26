@@ -3301,6 +3301,24 @@ index c53d45d..3281632 100644
  	cc_clear(sizeof(seed), seed);
  
  	return 0;
+diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
+index e5a6f9f..71fa77c 100644
+--- a/osfmk/vm/vm_map.c
++++ b/osfmk/vm/vm_map.c
+@@ -22103,6 +22103,13 @@ vm_map_corpse_footprint_collect(
+ 	vm_map_entry_t  old_entry,
+ 	vm_map_t        new_map)
+ {
++	{
++		/* LINUX64: hosted, collecting into pageable kernel memory faulted in kernel_task's crash path (test hosted19): corpses go without it */
++		extern unsigned long linux64_hook;
++		if (linux64_hook) {
++			return KERN_NOT_SUPPORTED;
++		}
++	}
+ 	vm_map_offset_t va;
+ 	kern_return_t   kr;
+ 	struct vm_map_corpse_footprint_header *footprint_header;
 diff --git a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
 index 65144c7..f931cd6 100644
 --- a/pexpert/arm/pe_kprintf.c

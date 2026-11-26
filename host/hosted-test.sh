@@ -14,7 +14,7 @@ timeout 120 fastboot boot "$IMG" 2>&1 | tail -1
 for i in $(seq 1 60); do up && break; sleep 1; done
 up || { echo "the Linux gadget did not appear"; exit 1; }
 sleep 22; bridge
-setsid nohup python3 -I host/klog.py "logs/$NAME.log" 220 >/dev/null 2>&1 < /dev/null &
+setsid nohup python3 -I host/klog.py "logs/$NAME.log" ${KLOG_SECS:-220} >/dev/null 2>&1 < /dev/null &
 sleep 3
 PSH_TIMEOUT=15 timeout 20 host/psh.py "${XNU_CPUS:+XNU_CPUS=$XNU_CPUS }xnu-run $*"
 sleep ${WAIT:-25}
