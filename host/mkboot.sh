@@ -29,11 +29,18 @@ cp "$G/a630_sqe.fw" "$G/a630_gmu.bin" "$F/"
 cp "$G/a615_zap.elf" "$F/sdm670/sargo/a615_zap.mbn"
 # GPU test userland (host/gpu-userland.py), when it has been assembled
 [ -d $W/gpu ] && cp -a $W/gpu "$R/gpu"
+# hosted XNU: the two modules (built in hosted/) and the kernel image (HOSTED_KERNEL=path of kernel.development.sweet from a hosted CI run)
+if [ -n "${HOSTED_KERNEL:-}" ]; then
+	mkdir -p "$R/hosted" "$R/lib/firmware/xnu"
+	cp hosted/fki-ko/fki.ko hosted/xnu-ko/xnu.ko "$R/hosted/"
+	cp "$HOSTED_KERNEL" "$R/lib/firmware/xnu/kernel.macho"
+	install -m755 host/initramfs/xnu-run "$R/bin/xnu-run"
+fi
 (cd "$R" && find . | cpio -o -H newc --quiet --owner=0:0 | gzip -9) > $W/initramfs.gz
 cat "$K/arch/arm64/boot/Image.gz" "$DTB" > $W/Image.gz-dtb
 ls -l $W/Image.gz-dtb $W/initramfs.gz
 PYTHONPATH=downloads/mkbootimg python3 downloads/mkbootimg/mkbootimg.py --header_version 0 --kernel $W/Image.gz-dtb --ramdisk $W/initramfs.gz \
 	--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 --tags_offset 0x100 --pagesize 4096 \
-	--cmdline "console=tty0 panic=10 reboot=240 $EXTRA" -o "$IMG"
+	--cmdline "console=tty0 panic=10 softlockup_panic=1 reboot=240 $EXTRA" -o "$IMG"
 python3 downloads/avb/avbtool.py add_hash_footer --image "$IMG" --partition_size 67108864 --partition_name boot
 ls -l "$IMG"

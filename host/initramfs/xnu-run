@@ -1,0 +1,7 @@
+#!/bin/sh
+# xnu-run [xnu.ko parameters]: load fki.ko and xnu.ko and start the hosted XNU kernel /lib/firmware/xnu/kernel.macho. The kernel log carries XNU's console.
+# insmod returns when the run ends, so it runs detached. Defaults: a contiguous region (mode=3), one CPU, 512 MB.
+[ -f /lib/firmware/xnu/kernel.macho ] || { echo "no hosted kernel in this image"; exit 1; }
+grep -q '^fki ' /proc/modules || insmod /hosted/fki.ko || exit 1
+setsid insmod /hosted/xnu.ko image=xnu/kernel.macho mode=3 cpus=1 ram_mb=512 "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+echo started

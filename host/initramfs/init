@@ -18,6 +18,9 @@ T=$(sed -n 's/.*\breboot=\([0-9]*\).*/\1/p' /proc/cmdline); T=${T:-240}
 # the DSI panel device has no modalias file, so coldplug misses its driver (display and GPU wait for it); this unit has the Samsung panel
 (sleep 2; modprobe panel-samsung-sofef00-bonito) &
 
+# if the whole machine hangs (a CPU lost to hosted XNU can take the others with it), the SoC watchdog restarts it
+(sleep 15; [ -c /dev/watchdog ] && watchdog -T 30 -t 5 /dev/watchdog) &
+
 # coldplug the modules (two passes: the second finds what the first created)
 for pass in 1 2; do
 	find /sys/devices -name modalias -exec cat {} + 2>/dev/null | sort -u | while read -r m; do modprobe -q "$m"; done
