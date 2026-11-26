@@ -27,6 +27,8 @@ static unsigned nmaps;
 static int drm, hc, verbose;
 static uint32_t queue;
 static uint64_t submits, maps_made;
+static uint32_t last_fence;
+static int do_wait(uint32_t fence, uint64_t ns);
 
 static int param(uint32_t p, uint64_t *v)
 {
@@ -78,6 +80,10 @@ static int do_map(uint64_t iova, const uint64_t *pa, uint32_t n)
 static int do_unmap(uint64_t iova, uint64_t len)
 {
 	int found = 0;
+
+	/* as the direct port's window and buffer release: the GPU finishes what it was given before memory goes (up to 1 s) */
+	for (int i = 0; i < 50 && last_fence && do_wait(last_fence, AGPU_WAIT_SLICE_NS) == -ETIMEDOUT; i++)
+		;
 	for (unsigned i = 0; i < nmaps;) {
 		if (maps[i].iova >= iova && maps[i].iova + maps[i].len <= iova + len) {
 			struct drm_gem_close c = { .handle = maps[i].handle };
@@ -134,6 +140,7 @@ static int do_submit(const struct agpu_ib *ib, uint32_t n, uint64_t *fence)
 	if (ioctl(drm, DRM_IOCTL_MSM_GEM_SUBMIT, &s))
 		return -errno;
 	*fence = s.fence;
+	last_fence = s.fence;
 	submits++;
 	return 0;
 }
