@@ -356,7 +356,7 @@ index c6e2d70..c230c11 100644
  # and -march=armv8.2-a+crypto kept its features, so clang vectorized XORs into EOR3 (FEAT_SHA3),
  # an undefined instruction on the A76/A55 (panic in a6_blit_ib). Cortex-A55 = the ISA both clusters share.
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index 42362c5..1fd9338 100644
+index 42362c5..316c79b 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
 @@ -30,6 +30,7 @@
@@ -406,12 +406,12 @@ index 42362c5..1fd9338 100644
 + * its own world (the host's page tables, which hold XNU's kernel mappings; XNU's keys). start_cpu's work on hardware
 + * (MMU, vectors, stacks) is the host's; arm_init_cpu sets the thread pointer and goes on into the scheduler.
 + */
-+void arm_init_cpu(cpu_data_t *cpu_data_ptr, uint64_t hib_header_phys);
++void arm_init_cpu(cpu_data_t *cpu_data_ptr);
 +void linux64_cpu_entry(cpu_data_t *cpu_data_ptr) __attribute__((noreturn));
 +void
 +linux64_cpu_entry(cpu_data_t *cpu_data_ptr)
 +{
-+	arm_init_cpu(cpu_data_ptr, 0);
++	arm_init_cpu(cpu_data_ptr);
 +	__builtin_unreachable();
 +}
 +
@@ -738,7 +738,7 @@ index 5989b48..2ed9325 100644
  		/* Log the interrupt service latency (-ve value expected by tool) */
  		KDBG_RELEASE(DECR_TRAP_LATENCY | DBG_FUNC_NONE,
 diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
-index cd7cc4c..54595b5 100644
+index cd7cc4c..5910137 100644
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
 @@ -27,6 +27,7 @@
@@ -749,7 +749,22 @@ index cd7cc4c..54595b5 100644
  #include <debug.h>
  
  #include <kern/assert.h>
-@@ -2185,7 +2186,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1825,7 +1826,7 @@ init_ptpages(tt_entry_t *tt, vm_map_address_t start, vm_map_address_t end, bool
+ #define ARM64_PHYSMAP_ALIGNMENT_PADDING (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE)
+ #endif
+ 
+-#if defined(SWEET)
++#if defined(SWEET) && !defined(SWEET_HOSTED)
+ /*
+  * The reserved low-globals/kernel region is excluded from VM allocation.
+  * Use the otherwise empty 32MB block above low globals and below gVirtBase
+@@ -2180,20 +2181,30 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 
+ 	arm_set_user_tbi();
+ 
+-#if defined(SWEET)
++#if defined(SWEET) && !defined(SWEET_HOSTED)
+ 	/* phystokv() must still refer to the bootstrap aperture here. */
  	sweet_early_map_final();
  #endif
  	arm_vm_physmap_init(args);
@@ -766,7 +781,8 @@ index cd7cc4c..54595b5 100644
  
  	ml_enable_monitor();
  
-@@ -2193,7 +2202,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+-#if defined(SWEET)
++#if defined(SWEET) && !defined(SWEET_HOSTED)
  	/* The final TTBR1 is live; leave the outgoing VA=PA framebuffer alias. */
  	sweet_early_relocate(SWEET_EARLY_FB_VA + (SWEET_EARLY_FB_PA - SWEET_EARLY_FB_BLOCK_PA));
  #endif
@@ -1483,7 +1499,7 @@ index 2449334..f05d461 100644
  	ARM64_STACK_EPILOG
  
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index 55e609a..6f68419 100644
+index 55e609a..5c83c1a 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
 @@ -72,6 +72,8 @@
@@ -1495,7 +1511,7 @@ index 55e609a..6f68419 100644
  #include <prng/entropy.h>
  
  
-@@ -2186,3 +2188,281 @@ sleh_invalid_stack(arm_context_t *context, uint32_t esr __unused, vm_offset_t fa
+@@ -2186,3 +2188,285 @@ sleh_invalid_stack(arm_context_t *context, uint32_t esr __unused, vm_offset_t fa
  	panic_with_thread_kernel_state("Invalid kernel stack pointer (probable corruption).", &context->ss);
  }
  
@@ -1637,7 +1653,11 @@ index 55e609a..6f68419 100644
 +			linux64_el0_t0[slot] = 0;
 +		}
 +	}
++#if HAS_APPLE_PAC
 +	linux64_el0_run(thread->machine.upcb, (thread->machine.arm_machine_flags & ARM_MACHINE_THREAD_DISABLE_USER_JOP) != 0);
++#else
++	linux64_el0_run(thread->machine.upcb, false);	/* no pointer authentication on this CPU: nothing to switch off */
++#endif
 +}
 +
 +/* LINUX64: the registers linux64_el0_vectors saved for an exception taken at EL0 (cswitch.s) */
@@ -1798,6 +1818,44 @@ index b595c56..01b6478 100644
                  );
  		ml_pac_safe_interrupts_restore(intr);
  	}
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index d3d8f80..631ed58 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -8,7 +8,7 @@
+  */
+ #include <arm64/sweet_early.h>
+ 
+-#if defined(SWEET)
++#if defined(SWEET) && !defined(SWEET_HOSTED)
+ #include <stdint.h>
+ #include <kern/misc_protos.h>
+ 
+diff --git a/osfmk/arm64/sweet_early.h b/osfmk/arm64/sweet_early.h
+index d7a25f2..5d70f0e 100644
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -6,7 +6,7 @@
+ #include <stdarg.h>
+ #include <stdint.h>
+ 
+-#if defined(SWEET)
++#if defined(SWEET) && !defined(SWEET_HOSTED)
+ void sweet_early_mark(unsigned int stage, const char *label);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
+@@ -19,6 +19,11 @@ static inline void sweet_early_mark(unsigned int stage, const char *label)
+ 	(void)label;
+ }
+ static inline void sweet_early_disable(void) {}
++#if defined(SWEET_HOSTED)
++static inline void sweet_early_putc(char c) { (void)c; }
++static inline void sweet_early_panic(const char *fmt, va_list *args) { (void)fmt; (void)args; }
++static inline void sweet_early_relocate(uint64_t base) { (void)base; }
++#endif
+ #endif
+ 
+ #endif
 diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
 index c86b9e7..b1c831f 100644
 --- a/osfmk/console/serial_console.c
@@ -1929,7 +1987,7 @@ index fc5d894..8c35910 100644
  			addr = (vm_offset_t)&_backtrace_packed_out_of_reach;
  			addr_delta = addr - vm_kernel_stext;
 diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
-index adc8e49..fa263c8 100644
+index adc8e49..bfdc519 100644
 --- a/osfmk/kern/debug.c
 +++ b/osfmk/kern/debug.c
 @@ -55,6 +55,7 @@
@@ -1989,6 +2047,38 @@ index adc8e49..fa263c8 100644
  #if defined(SWEET)
  	/* No CPU/thread/debugger state is required for this first panic copy. */
  	sweet_early_panic(panic_format_str, panic_args);
+@@ -1081,7 +1116,9 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
+ 	{
+ 		/* Put the panic string into the log ring and on the eMMC right away (the later paths may never complete). */
+ 		extern void sweet_log_panic_string(const char *fmt, va_list *args);
+-		sweet_log_panic_string(panic_format_str, panic_args);
++		if (!linux64_hook) {	/* LINUX64: the eMMC and the reset line are the host's */
++			sweet_log_panic_string(panic_format_str, panic_args);
++		}
+ 	}
+ #endif
+ 
+@@ -1321,14 +1358,18 @@ debugger_collect_diagnostics(unsigned int exception, unsigned int code, unsigned
+ 		{
+ 			/* The panic text and backtrace are on the console (and in the log ring) now: get them to the eMMC before the hang. */
+ 			extern void sweet_log_panic_flush(void);
+-			sweet_log_panic_flush();
++			if (!linux64_hook) {	/* LINUX64: the eMMC and the reset line are the host's */
++				sweet_log_panic_flush();
++			}
+ 		}
+ #endif
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	{
+ 		/* The log is on the eMMC: restart the chip now if the boot-arg sweetpanicreset=1 asks for it (unattended test loop). */
+ 		extern void sweet_reset_after_panic(void);
+-		sweet_reset_after_panic();
++		if (!linux64_hook) {	/* LINUX64: the eMMC and the reset line are the host's */
++			sweet_reset_after_panic();
++		}
+ 	}
+ #endif
+ 
 diff --git a/osfmk/kern/kext_alloc.c b/osfmk/kern/kext_alloc.c
 index 8654767..b539e25 100644
 --- a/osfmk/kern/kext_alloc.c
@@ -2304,3 +2394,22 @@ index 65144c7..f931cd6 100644
  	if (!disable_serial_output && !disable_kprintf_output) {
  		va_start(listp, fmt);
  		va_copy(listp2, listp);
+diff --git a/pexpert/pexpert/arm64/SWEET.h b/pexpert/pexpert/arm64/SWEET.h
+index 0350584..22f8735 100644
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -34,7 +34,13 @@
+ #define __ARM_ENABLE_SWAP__       1
+ #define __ARM_V8_CRYPTO_EXTENSIONS__ 1
+ #define __ARM_PAN_AVAILABLE__     1
+-#define __ARM_16K_PG__            1
++/*
++ * LINUX64: this build runs hosted inside Linux (docs/PORT-HOSTED.md), on the host's 4 KB translation granule: no 16 KB
++ * hardware pages (the VM page is still 16 KB above 1 GB of RAM, PAGE_RATIO 4), kernel root table at level 1. The
++ * phone's hardware belongs to Linux: SWEET_HOSTED turns off this board's early framebuffer, log and reset paths.
++ */
++#define SWEET_HOSTED              1
++#define __ARM64_PMAP_SUBPAGE_L1__ 1
+ 
+ #define HAS_GIC_V3                1
+ 

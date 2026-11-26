@@ -10,7 +10,7 @@ on:
         description: RELEASE / DEVELOPMENT / DEBUG
         default: DEVELOPMENT
       machine_config:
-        description: xnu MACHINE_CONFIG (hosted builds use BCM2837)
+        description: xnu MACHINE_CONFIG
         default: SWEET
       hosted:
         description: apply xnu/linux64 (XNU hosted inside Linux, docs/PORT-HOSTED.md)

@@ -16,10 +16,12 @@
 (32 files; machine flag `-mcpu=cortex-a55+crypto` on the BCM2837 base config). Left out on purpose, to be revisited:
 - 0002 host devices (needed before any disk, display or input), 0003 boot without iBoot, 0004 macOS 27 system calls, 0005 paravirtual ticket locks, 0008 replacement corecrypto.
 - 47-bit user address space and the macOS page-size changes: iOS user addresses fit the stock 39-bit, 4 KB-granule attributes; xnu-8796 already picks 16 KB VM pages above 1 GB of RAM.
-- Nothing compiled yet at the time of writing.
+- Build base: **the `SWEET` machine config** (it carries the iOS userland support: HFS, pthread, AES, plain `arm64`), with `SWEET_HOSTED` in `SWEET.h`: 4 KB pages, no early framebuffer,
+  eMMC log or reset paths. The first try on the `BCM2837` config (run 45844052472) built as arm64e and lacked that support.
+- Still to check at run time: other SWEET hardware paths (GIC and IPIs: use `cpus=1` first; drivers matched from the device tree).
 
 ## Next
-1. CI: `gh workflow run xnu.yml -f hosted=true -f machine_config=BCM2837`; fix compile and link errors (artifact `xnu-log`).
+1. CI: `gh workflow run xnu.yml -f hosted=true`; fix compile and link errors (artifact `xnu-log`).
 2. Load it with `xnu.ko` on the phone: early boot to console messages. Adapt `xnu.ko` to xnu-8796 where needed.
 3. Host devices (0002) and kexts: disk, display, input.
 4. Memory: the XNU carve-out is limited by `rmtfs-mem` (docs/GATE1.md).
