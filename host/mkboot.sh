@@ -49,6 +49,6 @@ cat "$K/arch/arm64/boot/Image.gz" $W/board.dtb > $W/Image.gz-dtb
 ls -l $W/Image.gz-dtb $W/initramfs.gz
 PYTHONPATH=downloads/mkbootimg python3 downloads/mkbootimg/mkbootimg.py --header_version 0 --kernel $W/Image.gz-dtb --ramdisk $W/initramfs.gz \
 	--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 --tags_offset 0x100 --pagesize 4096 \
-	--cmdline "console=tty0 panic=10 softlockup_panic=1 ${HOSTED_KERNEL:+cma=800M} reboot=240 $EXTRA" -o "$IMG"
+	--cmdline "console=tty0 panic=10 softlockup_panic=1 ${HOSTED_KERNEL:+cma=1700M@0x100000000} reboot=240 $EXTRA" -o "$IMG"
 python3 downloads/avb/avbtool.py add_hash_footer --image "$IMG" --partition_size 67108864 --partition_name boot
 ls -l "$IMG"

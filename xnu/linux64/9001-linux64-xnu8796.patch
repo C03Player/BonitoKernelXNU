@@ -1330,7 +1330,7 @@ index a6af1b9..85babed 100644
  		max_cpus_initialized = MAX_CPUS_WAIT;
  		lck_mtx_sleep(&max_cpus_lock, LCK_SLEEP_DEFAULT, &max_cpus_initialized, THREAD_UNINT);
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
-index bd099f8..42bef77 100644
+index bd099f8..03d89b6 100644
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
 @@ -10075,8 +10075,12 @@ pmap_cache_attributes(
@@ -1347,6 +1347,16 @@ index bd099f8..42bef77 100644
  	}
  
  	result = VM_WIMG_DEFAULT;
+@@ -10892,7 +10896,8 @@ pmap_create_commpages(vm_map_address_t *kernel_data_addr, vm_map_address_t *kern
+ 	vm_map_address_t commpage_text_va = 0;
+ 
+ 	do {
+-		int text_leaf_index = random() % num_ptes;
++		/* LINUX64: a VM page spans PAGE_RATIO hardware entries (16 KB pages over the 4 KB granule): the index must start such a run */
++		int text_leaf_index = (random() % (num_ptes / PAGE_RATIO)) * PAGE_RATIO;
+ 
+ 		// Generate a VA for the commpage text with the same root and twig index as data
+ 		// comm page, but with new leaf index we've just generated.
 diff --git a/osfmk/arm/rtclock.c b/osfmk/arm/rtclock.c
 index 5989b48..2ed9325 100644
 --- a/osfmk/arm/rtclock.c

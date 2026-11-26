@@ -37,6 +37,10 @@ Kernel layout of the hosted build: link address `0xfffffff007004000` (not large 
 - **hosted5: the whole Mach bootstrap runs** (VM, zones, scheduler, threads, startup phase 15) and enters IOKit (`PE_init_iokit`); fault in `IONVRAMCHRPHandler::unserializeVariables`
   (blank NVRAM). Fix: apply xnulinux patch 0002 (host devices; also the generic platform expert for an unknown platform).
 
+- hosted6: **the kernel boots through IOKit startup** (SWEET platform services register) and waits for a root disk. A warning about an XNU stack with sp bit 14 set (idle path) remains.
+- hosted7: root disk found (`hostdisk=/dev/mmcblk0p72`, read-only, the direct port's iOS image), 1536 MB, 16 KB pages; `cma=1700M@0x100000000`. Panic `write_pte_fast: PTE write is unaligned`
+  from the commpage: the slid text page address was 4 KB aligned. Fixed.
+
 ## Next
 1. CI: `gh workflow run xnu.yml -f hosted=true`; fix compile and link errors (artifact `xnu-log`).
 2. Load it with `xnu.ko` on the phone: early boot to console messages. Adapt `xnu.ko` to xnu-8796 where needed.

@@ -711,6 +711,8 @@ static void fki_linux_runs(void (*fn)(void *), void *arg)
 	unsigned long daif = read_sysreg(daif);
 	struct fki_runs r = { fn, arg };
 
+	/* Linux's context switch expects D and A open with IRQ and FIQ masked (0xc0); the 7.3 host warns otherwise */
+	write_sysreg(PSR_I_BIT | PSR_F_BIT, daif);
 	fki_linux_runs_body(fki_runs_then_forget, &r);
 	write_sysreg(daif, daif);
 }

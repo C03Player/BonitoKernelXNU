@@ -1,8 +1,14 @@
 #!/bin/sh
 # xnu-run [xnu.ko parameters]: load fki.ko and xnu.ko and start the hosted XNU kernel /lib/firmware/xnu/kernel.macho. The kernel log carries XNU's console.
-# insmod returns when the run ends, so it runs detached. Defaults: a contiguous region (mode=3), one CPU, 512 MB.
+# insmod returns when the run ends, so it runs detached. Defaults: a contiguous region (mode=3), one CPU, 1536 MB
+# (above 1 GB XNU uses 16 KB pages), the root disk below.
 # XNU boot-args with spaces need literal quotes for the kernel's parameter parser: bootargs="\"a=1 b=2\"".
 [ -f /lib/firmware/xnu/kernel.macho ] || { echo "no hosted kernel in this image"; exit 1; }
 grep -q '^fki ' /proc/modules || insmod /hosted/fki.ko || exit 1
-setsid insmod /hosted/xnu.ko image=xnu/kernel.macho mode=3 cpus=1 ram_mb=512 bootargs="\"keepsyms=1 serial=0\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+# the iOS root: the direct port's HFS+ image on userdata, READ-ONLY (that image is the fallback port's; nothing here writes it). XNU_DISK= other path.
+D=${XNU_DISK-/dev/mmcblk0p72}
+[ -n "$D" ] && [ "$(dd if="$D" bs=1 skip=1024 count=2 2>/dev/null)" != "H+" ] && [ "$(dd if="$D" bs=1 skip=1024 count=2 2>/dev/null)" != "HX" ] && { echo "$D has no HFS+ volume"; D=; }
+# boot-args the direct port's userland needs (bonito/tools/mkios.sh), without its hardware ones
+A="keepsyms=1 serial=0 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
+setsid insmod /hosted/xnu.ko image=xnu/kernel.macho mode=3 cpus=1 ram_mb=1536 ${D:+hostdisk=$D} bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
 echo started
