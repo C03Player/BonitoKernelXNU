@@ -1,60 +1,103 @@
 # BonitoKernelXNU
 
-An experiment: run the iOS 16 kernel (XNU, xnu-8796.141.3) **inside Linux** on a Google Pixel 3a XL ("bonito": Snapdragon 670, Adreno 615, 4 GB),
-so that Linux drivers own the phone's hardware. The method follows [xnulinux](https://github.com/AFK-surf/xnulinux): two kernel modules,
-`fki.ko` and `xnu.ko`, load XNU into a running arm64 Linux kernel.
+BonitoKernelXNU is an experiment in running the iOS 16 kernel (XNU, version xnu-8796.141.3) inside Linux on a Google Pixel 3a XL, codenamed "bonito".
+The phone has a Snapdragon 670 processor, an Adreno 615 GPU and 4 GB of memory.
 
-This is a research project. **It does not run iOS on the phone yet.**
+The idea is to let Linux, with its existing drivers, own the phone's hardware, while XNU runs alongside it as a guest that asks Linux for what it needs.
+This follows the approach of [xnulinux](https://github.com/AFK-surf/xnulinux), where two Linux kernel modules, `fki.ko` and `xnu.ko`, load XNU into a running arm64 Linux kernel.
 
-## Status (2026-11-26)
+**This project does not run iOS on the phone yet.** It is research in progress.
 
-| Step | State |
-| --- | --- |
-| Mainline Linux 7.3.5 host on the phone: USB network and shell, display, GPU driver | works ([docs/GATE1.md](docs/GATE1.md)) |
-| Hosted XNU kernel builds in CI | works |
-| Hosted XNU starts inside Linux | reaches startup phase 4 and prints its console; further bring-up in progress |
-| Disk, display, input, network for the hosted system | not started |
-| iOS userland | not started on this path |
+## Why host XNU inside Linux?
 
-Details, test history and next steps: [docs/PORT-HOSTED.md](docs/PORT-HOSTED.md). Why this approach, with measured compatibility: [docs/XNULINUX-EVAL.md](docs/XNULINUX-EVAL.md).
+An earlier port, [C03Player/ios-bonito](https://github.com/C03Player/ios-bonito), runs XNU directly on the same phone. It reaches the iOS home screen,
+but every piece of hardware needs a driver written for XNU, which is slow work, and several parts of the phone still do not work there.
 
-An earlier port that runs XNU directly on the same phone's hardware is at [C03Player/ios-bonito](https://github.com/C03Player/ios-bonito);
-its patches and notes are the base of this one.
+A mainline Linux kernel already drives much of this phone. Hosting XNU inside Linux aims to reuse that work. It does not by itself make graphics faster:
+the GPU still has to do the same work. The reasoning, and the compatibility measurements behind it, are in [docs/XNULINUX-EVAL.md](docs/XNULINUX-EVAL.md).
 
-## Layout
+## Where things stand (26 November 2026)
 
-| Path | Contents |
-| --- | --- |
-| `xnu/patches/` | XNU patch series of the direct port |
-| `xnu/linux64/` | the patch that makes that tree run hosted (applied last), and a record of the manual porting edits |
-| `hosted/` | `fki.ko` and `xnu.ko`, adapted to this kernel |
-| `host/` | Linux host kernel config and build, test boot image, test scripts |
-| `bonito/` | phone tools (USB network bridge and others), boot shim and iOS userland pieces of the direct port |
-| `docs/` | notes; several describe the direct port |
+The Linux side works. A mainline Linux 7.3.5 kernel boots on the phone with a shell over the USB cable, a working display and the GPU driver loaded.
+A small Vulkan test passes on the GPU. Details are in [docs/GATE1.md](docs/GATE1.md).
 
-## Building
+The ported XNU kernel builds on GitHub's macOS runners. When loaded inside Linux on the phone, it starts, reaches an early stage of its own startup
+(phase 4) and prints messages to its console. The furthest verified run stopped when XNU looked for an interrupt controller that Linux owns.
+A change for that problem was being built and had not been tested on the phone when this was written.
 
-You need an arm64 Linux machine for the host side. Paths such as `/usb/work/...` are defaults of the author's machine; override them with the variables named in each script.
+Still to be done are disk, display, input and network support for the hosted system, and then the iOS userland itself.
+The full history of tests and the next steps are in [docs/PORT-HOSTED.md](docs/PORT-HOSTED.md).
 
-1. **Hosted XNU** (GitHub Actions, macOS runner): `gh workflow run xnu.yml -f hosted=true`, then download the `xnu-kernel` artifact.
-2. **Linux host kernel:** unpack [sdm670-mainline](https://gitlab.com/sdm670-mainline/linux) tag `sdm670-v7.3.5_beta2`, then `SRC=... OUT=... host/build-mainline.sh`.
-3. **Modules:** `make -C $OUT M=$PWD/hosted/fki-ko modules`, then
-   `make -C $OUT M=$PWD/hosted/xnu-ko KBUILD_EXTRA_SYMBOLS=$PWD/hosted/fki-ko/Module.symvers modules`.
-4. **Test image:** `HOSTED_KERNEL=path/to/kernel.development.sweet host/mkboot.sh work/host/linux-hosted.img "reboot=180"`.
-   It also needs files that are not in this repository: AOSP `mkbootimg` and `avbtool` under `downloads/`, and the phone's own GPU firmware (`GPUFW=`).
-5. **Run:** with the phone in the bootloader, `host/hosted-test.sh NAME`. The log lands in `logs/NAME.log`.
+## What is in this repository
+
+- `xnu/patches/` holds the XNU patch series from the direct port.
+- `xnu/linux64/` holds the additional patch that makes that kernel run inside Linux. It is applied after the series above. A script next to it records the manual porting edits.
+- `hosted/` holds the `fki.ko` and `xnu.ko` modules, adapted to this kernel.
+- `host/` holds the Linux kernel configuration, the build scripts, the test boot image and the test scripts.
+- `bonito/` holds phone tools, including a USB network bridge, together with the boot shim and iOS userland pieces of the direct port.
+- `docs/` holds the project notes. Several of them describe the direct port.
+
+## Building and testing
+
+You need an arm64 Linux machine for the host side. Some scripts default to paths such as `/usb/work/`, which exist on the author's machine.
+Each script names the variables you can set to use your own locations.
+
+### 1. Build the hosted XNU kernel
+
+Run the GitHub Actions workflow, then download the `xnu-kernel` artifact from the finished run:
+
+```
+gh workflow run xnu.yml -f hosted=true
+```
+
+### 2. Build the Linux host kernel
+
+Download the [sdm670-mainline](https://gitlab.com/sdm670-mainline/linux) source at tag `sdm670-v7.3.5_beta2`, unpack it, and run:
+
+```
+SRC=/path/to/source OUT=/path/to/build host/build-mainline.sh
+```
+
+### 3. Build the two kernel modules
+
+```
+make -C /path/to/build M=$PWD/hosted/fki-ko modules
+make -C /path/to/build M=$PWD/hosted/xnu-ko KBUILD_EXTRA_SYMBOLS=$PWD/hosted/fki-ko/Module.symvers modules
+```
+
+### 4. Create the test boot image
+
+```
+HOSTED_KERNEL=/path/to/kernel.development.sweet host/mkboot.sh work/host/linux-hosted.img "reboot=180"
+```
+
+This step needs some files that are not included here: the AOSP tools `mkbootimg` and `avbtool`, placed under `downloads/`,
+and the GPU firmware from your own phone, whose folder you give in the `GPUFW` variable.
+
+### 5. Run a test
+
+Put the phone in its bootloader, then run the following command, replacing `NAME` with a name for the test:
+
+```
+host/hosted-test.sh NAME
+```
+
+The phone's log is saved to `logs/NAME.log`.
 
 ## Safety
 
-- Use at your own risk. You need an unlocked bootloader.
-- The tests use `fastboot boot`: nothing is flashed. They do switch the active slot to `a`.
-- The test image reboots to the bootloader on a timer and arms the SoC watchdog. A hang early in the Linux boot still needs the power button.
-- The test image opens a shell without a password on the USB network link.
+Use this project at your own risk. It requires a phone with an unlocked bootloader.
+
+- The tests start the image with `fastboot boot`, so nothing is flashed to the phone. They do change the active slot to `a`.
+- The test image returns to the bootloader after a timer expires, and it also uses the processor's hardware watchdog to recover from hangs.
+  If Linux itself hangs very early during startup, you will need to hold the power button.
+- The test image offers a shell **without a password** on the USB network link. Only use it with a computer you trust.
 
 ## Licences and credits
 
-No Apple, Google or Qualcomm binaries or firmware are included.
+No binaries or firmware from Apple, Google or Qualcomm are included.
 
-- XNU patches modify Apple's XNU, under the [Apple Public Source License 2.0](https://opensource.apple.com/license/apsl).
-- `hosted/` and the hosting patch derive from [AFK-surf/xnulinux](https://github.com/AFK-surf/xnulinux) (`cf3399e`): APSL-2.0 and GPL-2.0, as marked per file.
-- The direct port builds on ios-sweet, ios-flame and other projects: see [ATTRIBUTION.md](ATTRIBUTION.md).
+- The XNU patches modify Apple's XNU and fall under the [Apple Public Source License 2.0](https://opensource.apple.com/license/apsl).
+- The files in `hosted/` and the hosting patch are derived from [AFK-surf/xnulinux](https://github.com/AFK-surf/xnulinux) at commit `cf3399e`.
+  They are licensed under APSL 2.0 or GPL 2.0, as marked in each file.
+- The direct port builds on ios-sweet, ios-flame and other projects, listed in [ATTRIBUTION.md](ATTRIBUTION.md).
