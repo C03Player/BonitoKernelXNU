@@ -14,27 +14,31 @@
 #define BIT(a, n) ((a)[(n) / 8] & (1 << ((n) % 8)))
 struct rec { uint16_t type, code; int32_t value; };
 
-int main(int argc, char **argv)
-{
-	struct pollfd p[16];
-	int maxx[16], maxy[16], n = 0;
-	int out = open(argc > 1 ? argv[1] : "/tmp/xnuinput", O_WRONLY | O_CREAT | O_APPEND, 0600);
+static struct pollfd p[16];
+static int maxx[16], maxy[16], n;
+static unsigned long long seen;	/* event node numbers already examined */
 
-	if (out < 0) {
-		perror("out");
-		return 1;
-	}
+/* open the touchscreens and key devices not seen yet (drivers can register theirs after this program starts) */
+static void scan(void)
+{
 	for (int i = 0; i < 32 && n < 16; i++) {
 		char path[32];
 		unsigned char abs[ABS_MAX / 8 + 1] = {0}, key[KEY_MAX / 8 + 1] = {0};
+		if (seen & (1ULL << i))
+			continue;
 		snprintf(path, sizeof(path), "/dev/input/event%d", i);
 		int fd = open(path, O_RDONLY);
 		if (fd < 0)
 			continue;
+		seen |= 1ULL << i;
 		ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs)), abs);
 		ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key)), key);
 		int touch = BIT(abs, ABS_MT_POSITION_X), keys = BIT(key, KEY_POWER) || BIT(key, KEY_VOLUMEUP) || BIT(key, KEY_VOLUMEDOWN);
+		char name[64] = "?";
+		ioctl(fd, EVIOCGNAME(sizeof(name)), name);
 		if (!touch && !keys) {
+			printf("%s: %s (not used)\n", path, name);
+			fflush(stdout);
 			close(fd);
 			continue;
 		}
@@ -43,18 +47,29 @@ int main(int argc, char **argv)
 			ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &ax);
 			ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &ay);
 		}
-		char name[64] = "?";
-		ioctl(fd, EVIOCGNAME(sizeof(name)), name);
 		printf("%s: %s%s%s, x max %d, y max %d\n", path, name, touch ? " touch" : "", keys ? " keys" : "", ax.maximum, ay.maximum);
+		fflush(stdout);
 		maxx[n] = ax.maximum > 0 ? ax.maximum : 1079;
 		maxy[n] = ay.maximum > 0 ? ay.maximum : 2159;
 		p[n].fd = fd;
 		p[n++].events = POLLIN;
 	}
-	fflush(stdout);
+}
+
+int main(int argc, char **argv)
+{
+	int out = open(argc > 1 ? argv[1] : "/tmp/xnuinput", O_WRONLY | O_CREAT | O_APPEND, 0600);
+
+	if (out < 0) {
+		perror("out");
+		return 1;
+	}
+	scan();
 	for (;;) {
-		if (poll(p, n, -1) <= 0)
+		if (poll(p, n, 2000) <= 0) {
+			scan();
 			continue;
+		}
 		for (int i = 0; i < n; i++) {
 			struct input_event ev[64];
 			if (!(p[i].revents & POLLIN))

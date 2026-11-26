@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/mman.h>
 #include <unistd.h>
 
 int main(int argc, char **argv)
@@ -20,9 +19,13 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	unsigned rows = var.yres < H ? var.yres : H, n = var.xres < W ? var.xres : W;
-	unsigned char *dst = mmap(0, fix.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
-	if (dst == MAP_FAILED) {
-		perror("mmap");
+	/*
+	 * Written with pwrite, not through a mapping: the DRM fbdev emulation pushes a write() to a command-mode panel at once (it marks the damage),
+	 * while stores into the mmap reached /dev/fb0's memory but never the glass (test hosted23).
+	 */
+	static unsigned char frame[8 << 20];
+	if ((size_t)fix.line_length * rows > sizeof(frame)) {
+		fprintf(stderr, "fb0 too large\n");
 		return 1;
 	}
 	for (;;) {
@@ -30,8 +33,9 @@ int main(int argc, char **argv)
 		if (src >= 0) {
 			if (pread(src, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf)) {
 				for (unsigned y = 0; y < rows; y++)
-					memcpy(dst + (size_t)y * fix.line_length, buf + (size_t)y * PITCH, n * 4);
-				msync(dst, fix.smem_len, MS_ASYNC);
+					memcpy(frame + (size_t)y * fix.line_length, buf + (size_t)y * PITCH, n * 4);
+				if (pwrite(fb, frame, (size_t)fix.line_length * rows, 0) < 0)
+					perror("pwrite fb0");
 			}
 			close(src);
 		}
