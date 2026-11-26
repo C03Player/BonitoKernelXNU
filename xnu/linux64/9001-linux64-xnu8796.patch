@@ -2311,6 +2311,20 @@ index ce42b1a..b680b54 100644
  			stack = 0;
  
  			s = splsched();
+diff --git a/osfmk/kern/zalloc.c b/osfmk/kern/zalloc.c
+index 182b44a..e876bf7 100644
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -160,7 +160,8 @@ ZONE_DEFINE_TYPE(percpu_u64_zone, "percpu.64", uint64_t,
+ #define ZONE_GUARD_SPARSE       (64  * 1024)
+ #endif /* ZSECURITY_CONFIG(SAD_FENG_SHUI) */
+ 
+-#if XNU_PLATFORM_MacOSX
++/* LINUX64: the hosted layout has about 112 GiB of kernel address space (39-bit): the iOS zone reservation, not macOS's 128 GiB */
++#if XNU_PLATFORM_MacOSX && !defined(ARM64_BOARD_CONFIG_SWEET)
+ #define ZONE_MAP_MAX            (32ULL << 30)
+ #define ZONE_MAP_VA_SIZE        (128ULL << 30)
+ #else /* XNU_PLATFORM_MacOSX */
 diff --git a/osfmk/mach/arm/thread_status.h b/osfmk/mach/arm/thread_status.h
 index 13f292a..82717bf 100644
 --- a/osfmk/mach/arm/thread_status.h

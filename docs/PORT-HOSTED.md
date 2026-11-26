@@ -32,6 +32,8 @@ Kernel layout of the hosted build: link address `0xfffffff007004000` (not large 
   assert `phys_cluster_id <= MAX_CPU_CLUSTER_PHY_ID` (fixed: no `cluster-type` in the device tree). Linux survived the panic.
 - The mainline tree has no watchdog node for SDM670: `host/mkboot.sh` adds the APSS watchdog to its copy of the dtb (verified: `/dev/watchdog` appears and is fed).
 
+- hosted4: VM system initialised (129011 free pages); panic `kmem_range_init ... claim zones`: macOS zone reservation (128 GiB) larger than the 39-bit layout. Fix: iOS sizes.
+
 ## Next
 1. CI: `gh workflow run xnu.yml -f hosted=true`; fix compile and link errors (artifact `xnu-log`).
 2. Load it with `xnu.ko` on the phone: early boot to console messages. Adapt `xnu.ko` to xnu-8796 where needed.
