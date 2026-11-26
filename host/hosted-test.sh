@@ -14,10 +14,10 @@ timeout 120 fastboot boot "$IMG" 2>&1 | tail -1
 for i in $(seq 1 60); do up && break; sleep 1; done
 up || { echo "the Linux gadget did not appear"; exit 1; }
 sleep 22; bridge
-setsid nohup python3 -I host/klog.py "logs/$NAME.log" 100 >/dev/null 2>&1 < /dev/null &
+setsid nohup python3 -I host/klog.py "logs/$NAME.log" 220 >/dev/null 2>&1 < /dev/null &
 sleep 3
 PSH_TIMEOUT=15 timeout 20 host/psh.py "xnu-run $*"
-sleep 25
+sleep ${WAIT:-25}
 echo "--- log: $(wc -l < logs/$NAME.log) lines"
 grep -a -E 'fki|xnu|XNU|linux64|panic|Oops|BUG:|Unable to handle|lockup|Internal error' "logs/$NAME.log" | cut -d';' -f2- | cut -c1-200 | head -${LINES_SHOWN:-90}
 echo "--- phone: $(PSH_TIMEOUT=8 timeout 12 host/psh.py 'cat /proc/uptime; cat /tmp/xnu-insmod.log' 2>&1 | tail -n 3 | tr '\n' ' ')"

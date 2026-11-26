@@ -6,7 +6,7 @@ The phone has a Snapdragon 670 processor, an Adreno 615 GPU and 4 GB of memory.
 The idea is to let Linux, with its existing drivers, own the phone's hardware, while XNU runs alongside it as a guest that asks Linux for what it needs.
 This follows the approach of [xnulinux](https://github.com/AFK-surf/xnulinux), where two Linux kernel modules, `fki.ko` and `xnu.ko`, load XNU into a running arm64 Linux kernel.
 
-**This project does not run iOS on the phone yet.** It is research in progress.
+**This is not a usable system.** It is research in progress.
 
 ## Why host XNU inside Linux?
 
@@ -21,11 +21,12 @@ the GPU still has to do the same work. The reasoning, and the compatibility meas
 The Linux side works. A mainline Linux 7.3.5 kernel boots on the phone with a shell over the USB cable, a working display and the GPU driver loaded.
 A small Vulkan test passes on the GPU. Details are in [docs/GATE1.md](docs/GATE1.md).
 
-The ported XNU kernel builds on GitHub's macOS runners. When loaded inside Linux on the phone, it starts, reaches an early stage of its own startup
-(phase 4) and prints messages to its console. The furthest verified run stopped when XNU looked for an interrupt controller that Linux owns.
-A change for that problem was being built and had not been tested on the phone when this was written.
+**iOS userland now starts inside Linux.** The ported XNU kernel, loaded into the running Linux kernel on the phone, mounts an iOS root filesystem (read-only)
+and runs `launchd`, which starts the system services, up to the processes that draw the home screen.
 
-Still to be done are disk, display, input and network support for the hosted system, and then the iOS userland itself.
+Nothing appears on the screen yet, because the hosted system has no display driver. Some services crash, and there is no touch input, network or graphics
+acceleration for the hosted system. It runs on one processor core.
+
 The full history of tests and the next steps are in [docs/PORT-HOSTED.md](docs/PORT-HOSTED.md).
 
 ## What is in this repository

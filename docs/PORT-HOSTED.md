@@ -45,8 +45,13 @@ Kernel layout of the hosted build: link address `0xfffffff007004000` (not large 
 - hosted9: identity properties from `host/mkadtprops.py` (new `adtprops=` parameter of `xnu.ko`) do not help: the generic platform expert has no `hw.target`.
   Fix: let `SweetPlatformExpert` (a device-tree platform expert) match, with its hardware paths off when hosted.
 
+- **hosted10 (2026-11-26): iOS userland boots inside Linux.** `launchd` runs the daemons from the read-only root: 344 execs of 135 programs, including
+  `configd`, `notifyd`, `runningboardd`, `lsd`, `mediaserverd`, `backboardd` and `SpringBoard`; about 940,000 user-mode exceptions in 70 s, no kernel panic.
+  Crashing (abort/trap, causes not examined): `backupd`, `analyticsd`, `lockdownd`, `backboardd` (twice), `driverkitd`. Nothing is shown on the screen: the hosted system has no framebuffer driver yet.
+
 ## Next
-1. CI: `gh workflow run xnu.yml -f hosted=true`; fix compile and link errors (artifact `xnu-log`).
-2. Load it with `xnu.ko` on the phone: early boot to console messages. Adapt `xnu.ko` to xnu-8796 where needed.
-3. Host devices (0002) and kexts: disk, display, input.
-4. Memory: the XNU carve-out is limited by `rmtfs-mem` (docs/GATE1.md).
+1. Display: a framebuffer for the hosted system that Linux shows (`xnu.ko` `fb_width`/`fb_height`/`fb_dump`, boot-args `Video`; `SweetFramebuffer` or its replacement over it).
+2. Find why the crashing daemons abort; compare with the direct port's logs.
+3. A writable root without touching the fallback port's image (copy-on-write on the Linux side).
+4. Input, network, GPU (a bridge to the host's driver), more CPUs (IPIs: `cpus=1` so far).
+5. Memory: the XNU region comes from a CMA area at 0x100000000 (`cma=1700M@0x100000000`).
