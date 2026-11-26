@@ -25,6 +25,13 @@
 Build: `make -C /usb/work/linux/out M=$PWD/hosted/fki-ko modules`, then `xnu-ko` with `KBUILD_EXTRA_SYMBOLS`.
 Kernel layout of the hosted build: link address `0xfffffff007004000` (not large memory), 39-bit user and kernel tables.
 
+## Phone tests (`host/hosted-test.sh NAME`: boots the test image without flashing; log in `logs/NAME.log`)
+- hosted1: `fki_contig_alloc` out of memory. Fix: `cma=800M` on the host command line.
+- hosted2: `fki_enter` read pointer-authentication key registers (undefined on Kryo 360). Fix: guard in `fki_mod.c`.
+- **hosted3: XNU 8796 runs inside Linux**: image mapped, `arm_init`, startup phase 4, `kprintf` console, then panic `pe_init_fiq: cannot find GIC node` (fixed: no `HAS_GIC_V3` hosted);
+  assert `phys_cluster_id <= MAX_CPU_CLUSTER_PHY_ID` (fixed: no `cluster-type` in the device tree). Linux survived the panic.
+- The mainline tree has no watchdog node for SDM670: `host/mkboot.sh` adds the APSS watchdog to its copy of the dtb (verified: `/dev/watchdog` appears and is fed).
+
 ## Next
 1. CI: `gh workflow run xnu.yml -f hosted=true`; fix compile and link errors (artifact `xnu-log`).
 2. Load it with `xnu.ko` on the phone: early boot to console messages. Adapt `xnu.ko` to xnu-8796 where needed.

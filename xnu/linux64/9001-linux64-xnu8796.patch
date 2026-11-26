@@ -1515,7 +1515,7 @@ index 2449334..f05d461 100644
  	ARM64_STACK_EPILOG
  
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index 55e609a..5c83c1a 100644
+index 55e609a..8e79c32 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
 @@ -72,6 +72,8 @@
@@ -1527,6 +1527,15 @@ index 55e609a..5c83c1a 100644
  #include <prng/entropy.h>
  
  
+@@ -1911,7 +1913,7 @@ sleh_irq(arm_saved_state_t *state)
+ #endif
+ 
+ 
+-#if defined(SWEET)
++#if defined(SWEET) && !defined(SWEET_HOSTED)
+ 	/*
+ 	 * sweet: TrustZone owns GIC Group 0, so the timer and IPIs that other
+ 	 * ARM64 targets take as FIQs arrive here as Group 1 IRQs.
 @@ -2186,3 +2188,285 @@ sleh_invalid_stack(arm_context_t *context, uint32_t esr __unused, vm_offset_t fa
  	panic_with_thread_kernel_state("Invalid kernel stack pointer (probable corruption).", &context->ss);
  }
@@ -2425,10 +2434,10 @@ index 65144c7..f931cd6 100644
  		va_start(listp, fmt);
  		va_copy(listp2, listp);
 diff --git a/pexpert/pexpert/arm64/SWEET.h b/pexpert/pexpert/arm64/SWEET.h
-index 0350584..a901ab7 100644
+index 0350584..7a7e446 100644
 --- a/pexpert/pexpert/arm64/SWEET.h
 +++ b/pexpert/pexpert/arm64/SWEET.h
-@@ -34,7 +34,12 @@
+@@ -34,9 +34,14 @@
  #define __ARM_ENABLE_SWAP__       1
  #define __ARM_V8_CRYPTO_EXTENSIONS__ 1
  #define __ARM_PAN_AVAILABLE__     1
@@ -2440,5 +2449,8 @@ index 0350584..a901ab7 100644
 + */
 +#define SWEET_HOSTED              1
  
- #define HAS_GIC_V3                1
+-#define HAS_GIC_V3                1
++/* LINUX64: no HAS_GIC_V3 when hosted: the interrupt controller is Linux's (XNU gets timers and IPIs as host calls) */
  
+ #ifndef ASSEMBLER
+ #define PLATFORM_PANIC_LOG_DISABLED

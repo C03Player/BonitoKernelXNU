@@ -37,10 +37,18 @@ if [ -n "${HOSTED_KERNEL:-}" ]; then
 	install -m755 host/initramfs/xnu-run "$R/bin/xnu-run"
 fi
 (cd "$R" && find . | cpio -o -H newc --quiet --owner=0:0 | gzip -9) > $W/initramfs.gz
-cat "$K/arch/arm64/boot/Image.gz" "$DTB" > $W/Image.gz-dtb
+# the mainline SDM670 tree has no watchdog node; add the SoC's APSS watchdog (stock device tree address, as SDM845's mainline node) to a copy
+cp "$DTB" $W/board.dtb
+N=/soc@0/watchdog@17980000
+fdtput -c $W/board.dtb $N
+fdtput -t s $W/board.dtb $N compatible qcom,apss-wdt-sdm845 qcom,kpss-wdt
+fdtput -t x $W/board.dtb $N reg 0 17980000 0 1000
+fdtput -t x $W/board.dtb $N clocks "$(fdtget -t x $W/board.dtb /clocks/sleep-clk phandle)"
+fdtput -t u $W/board.dtb $N interrupts 0 0 1
+cat "$K/arch/arm64/boot/Image.gz" $W/board.dtb > $W/Image.gz-dtb
 ls -l $W/Image.gz-dtb $W/initramfs.gz
 PYTHONPATH=downloads/mkbootimg python3 downloads/mkbootimg/mkbootimg.py --header_version 0 --kernel $W/Image.gz-dtb --ramdisk $W/initramfs.gz \
 	--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 --tags_offset 0x100 --pagesize 4096 \
-	--cmdline "console=tty0 panic=10 softlockup_panic=1 reboot=240 $EXTRA" -o "$IMG"
+	--cmdline "console=tty0 panic=10 softlockup_panic=1 ${HOSTED_KERNEL:+cma=800M} reboot=240 $EXTRA" -o "$IMG"
 python3 downloads/avb/avbtool.py add_hash_footer --image "$IMG" --partition_size 67108864 --partition_name boot
 ls -l "$IMG"

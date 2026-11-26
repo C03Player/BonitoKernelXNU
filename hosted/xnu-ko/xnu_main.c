@@ -887,13 +887,13 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 		static char cname[XNU_MAX_CPUS][8];
 		cname[c][0] = 'c'; cname[c][1] = 'p'; cname[c][2] = 'u';
 		if (c < 10) { cname[c][3] = '0' + c; cname[c][4] = 0; } else { cname[c][3] = '1'; cname[c][4] = '0' + c - 10; cname[c][5] = 0; }
-		adt_node(&a, 6, 0);
+		adt_node(&a, 5, 0);
 		adt_prop_str(&a, "name", cname[c]);
 		adt_prop_str(&a, "compatible", "xnulinux,cpu");
 		adt_prop_str(&a, "state", c ? "waiting" : "running");
 		adt_prop_u32(&a, "reg", (unsigned)cpu_mpidr[c]);
 		adt_prop_u64(&a, "timebase-frequency", fki_counter_frequency());
-		adt_prop_u32(&a, "cluster-type", 'P');	/* the AMP scheduler wants E/M/P, not SMP */
+		/* no cluster-type: this kernel has one SMP cluster (MAX_CPU_CLUSTER_PHY_ID 0); a "P" cluster asserts */
 	}
 	adt_node(&a, 1, 0);				/* /defaults: XNU looks these up without checking */
 	adt_prop_str(&a, "name", "defaults");

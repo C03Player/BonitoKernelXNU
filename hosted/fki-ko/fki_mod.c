@@ -24,6 +24,7 @@
 #include <linux/sched.h>
 #include <linux/cpumask.h>
 #include <linux/vmalloc.h>
+#include <asm/cpufeature.h>
 #include <asm/arch_timer.h>
 #include <asm/neon.h>
 #include <asm/sysreg.h>
@@ -166,6 +167,8 @@ EXPORT_SYMBOL(fki_blob_put);
 
 static __always_inline void keys_read(struct fki_pac_keys *k)
 {
+	if (!system_supports_address_auth())	/* no pointer authentication (Kryo 360): the key registers are undefined */
+		return;
 	k->ia[0] = read_sysreg_s(SYS_APIAKEYLO_EL1); k->ia[1] = read_sysreg_s(SYS_APIAKEYHI_EL1);
 	k->ib[0] = read_sysreg_s(SYS_APIBKEYLO_EL1); k->ib[1] = read_sysreg_s(SYS_APIBKEYHI_EL1);
 	k->da[0] = read_sysreg_s(SYS_APDAKEYLO_EL1); k->da[1] = read_sysreg_s(SYS_APDAKEYHI_EL1);
@@ -176,6 +179,8 @@ static __always_inline void keys_read(struct fki_pac_keys *k)
 
 static __always_inline void keys_write(const struct fki_pac_keys *k)
 {
+	if (!system_supports_address_auth())	/* no pointer authentication (Kryo 360): the key registers are undefined */
+		return;
 	write_sysreg_s(k->ia[0], SYS_APIAKEYLO_EL1); write_sysreg_s(k->ia[1], SYS_APIAKEYHI_EL1);
 	write_sysreg_s(k->ib[0], SYS_APIBKEYLO_EL1); write_sysreg_s(k->ib[1], SYS_APIBKEYHI_EL1);
 	write_sysreg_s(k->da[0], SYS_APDAKEYLO_EL1); write_sysreg_s(k->da[1], SYS_APDAKEYHI_EL1);
