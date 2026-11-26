@@ -61,9 +61,13 @@ Kernel layout of the hosted build: link address `0xfffffff007004000` (not large 
   The lock screen animation reached 24.6 swaps/s on one CPU. hosted19 ended after 180 s with an assert in the corpse footprint
   code (`vm_map.c`, pageable kernel memory); footprint collection is now skipped when hosted (not yet tested).
 
+- **hosted20 (2026-11-26): iOS unlocked to the home screen inside Linux.** Two CPUs, the corpse fix: no kernel assert or panic in seven minutes.
+  An injected swipe up (`host/touch.py swipe 540 2140 540 600 12`) unlocked the lock screen; the home screen (apps, dock, widget, wallpaper) is drawn
+  and shown through `fbcopy` (`logs/hosted20-after3.png`, not committed).
+
 ## Next
-1. Touch and buttons (Linux input events to the hosted system), so the lock screen can be unlocked.
-2. Speed: more CPUs (IPIs; `cpus=1` so far), then GPU (a bridge to the host's msm/Turnip driver).
+1. Real touch from the screen: `evrelay` relays the rmi4 touchscreen; check its scaling and orientation by hand.
+2. Speed: more CPUs (2 work; try 4-6), boot time, then GPU (a bridge to the host's msm/Turnip driver).
 3. Network through the host (`fki_net_*`), and a persistent writable root.
 4. The crashing daemons (`backupd`, `analyticsd`, `lockdownd`, `backboardd` restarts).
 5. Memory: the XNU region comes from a CMA area at 0x100000000 (`cma=1700M@0x100000000`).

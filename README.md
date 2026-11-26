@@ -21,11 +21,11 @@ the GPU still has to do the same work. The reasoning, and the compatibility meas
 The Linux side works. A mainline Linux 7.3.5 kernel boots on the phone with a shell over the USB cable, a working display and the GPU driver loaded.
 A small Vulkan test passes on the GPU. Details are in [docs/GATE1.md](docs/GATE1.md).
 
-**The iOS lock screen now appears on the phone's screen, drawn by iOS running inside Linux.** The ported XNU kernel, loaded into the running
-Linux kernel, starts the iOS 16 system from the phone's storage and shows the lock screen with its clock and wallpaper.
+**iOS now boots to its home screen on the phone, running inside Linux.** The ported XNU kernel, loaded into the running Linux kernel, starts the
+iOS 16 system from the phone's storage on two processor cores. It reaches the lock screen, can be unlocked with a swipe, and shows the home screen.
 
-It is not usable yet: it takes more than two minutes to reach the lock screen, there is no touch input (so it cannot be unlocked), no network,
-and drawing is done by one processor core without the GPU. Changes to the system are kept in memory only and are lost at reboot.
+It is not usable yet: startup takes more than a minute, touches have so far been injected from the computer rather than read from the screen,
+there is no network, and drawing is done by the processor without the GPU. Changes to the system are kept in memory only and are lost at reboot.
 
 The full history of tests and the next steps are in [docs/PORT-HOSTED.md](docs/PORT-HOSTED.md).
 
