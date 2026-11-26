@@ -4,7 +4,8 @@
 # (above 1 GB XNU uses 16 KB pages), the root disk below.
 # XNU boot-args with spaces need literal quotes for the kernel's parameter parser: bootargs="\"a=1 b=2\"".
 [ -f /lib/firmware/xnu/kernel.macho ] || { echo "no hosted kernel in this image"; exit 1; }
-grep -q '^fki ' /proc/modules || insmod /hosted/fki.ko || exit 1
+# XNU's CPUs on the fast cores first (Kryo 360: Linux CPUs 6-7 are the Cortex-A75s, 0-5 the A55s); the host's helpers get the next ones
+grep -q '^fki ' /proc/modules || insmod /hosted/fki.ko cpu_list=${XNU_CPU_LIST:-6,7,5,4,3,2,1,0} || exit 1
 # the iOS root: the direct port's HFS+ image on userdata. That partition is the fallback port's and is never written: it is set read-only in
 # Linux, and XNU gets a snapshot of it whose changes go to a file in RAM (gone at reboot). XNU_DISK= another partition.
 D=${XNU_DISK-/dev/mmcblk0p72}
@@ -34,7 +35,7 @@ F=
 # (Linux's fbdev has no write path for kernel buffers: xnu.ko writes the frames to a file in RAM, fbcopy shows them)
 if [ -c /dev/fb0 ]; then
 	: > /tmp/xnufb
-	F="fb_width=1080 fb_height=2160 fb_dump=/tmp/xnufb fb_dump_ms=100"
+	F="fb_width=1080 fb_height=2160 fb_dump=/tmp/xnufb fb_dump_ms=33"
 	pidof fbcopy > /dev/null || setsid fbcopy /tmp/xnufb > /dev/null 2>&1 < /dev/null &
 fi
 setsid insmod /hosted/xnu.ko $F input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-1} ram_mb=1536 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &

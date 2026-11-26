@@ -38,7 +38,7 @@ if 'product' not in find:
 # CPUs: the direct port's CPU driver (SweetCPU, IONameMatch qcom,kryo470) registers them; xnu.ko writes name, reg (MPIDR) and state
 for i in range(8):
     if 'cpu%d' % i in find:
-        out += [('cpu%d' % i, k, v) for k, v in props('cpu%d' % i).items() if k not in ('name', 'AAPL,phandle', 'reg', 'state', 'timebase-frequency')]
+        out += [('cpu%d' % i, k, v) for k, v in props('cpu%d' % i).items() if k not in ('name', 'AAPL,phandle', 'reg', 'state', 'timebase-frequency', 'cpu-id', 'cluster-core-id', 'l2-cache-id', 'clock-frequency')]
 out += [('product', k, v) for k, v in props('product').items() if k not in ('name', 'AAPL,phandle')]
 with open(sys.argv[1], 'wb') as f:
     for node, k, v in out:

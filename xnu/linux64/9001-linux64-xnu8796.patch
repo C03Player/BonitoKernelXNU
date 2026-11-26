@@ -887,10 +887,23 @@ index 7a32a23..776fcbe 100644
  	    platform_name);
  
 diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
-index 2545cf9..4fda01b 100644
+index 2545cf9..9a9f5de 100644
 --- a/iokit/Kernel/arm/SweetCPU.cpp
 +++ b/iokit/Kernel/arm/SweetCPU.cpp
-@@ -206,6 +206,10 @@ SweetCPU::initCPU(bool boot)
+@@ -145,7 +145,12 @@ SweetCPU::startAll(void *arg __unused, wait_result_t result __unused)
+ 		IOSleep(1);
+ 	}
+ 	/* The supplied ADT has cpu0 as the boot CPU and ascending A55 nodes. */
++#if defined(SWEET_HOSTED)
++	/* LINUX64: the host picks the cores (fki.ko cpu_list, e.g. the fast ones first): the boot CPU need not be MPIDR 0 */
++	if (topology->boot_cpu->cpu_id != 0) {
++#else
+ 	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) {
++#endif
+ 		panic("SWEET CPU: expected boot MPIDR 0 and logical CPU 0");
+ 	}
+ 	for (unsigned int i = 0; i < topology->num_cpus; i++) {
+@@ -206,6 +211,10 @@ SweetCPU::initCPU(bool boot)
  	__atomic_store_n(&initialized, 1, __ATOMIC_RELEASE);
  }
  
@@ -901,7 +914,7 @@ index 2545cf9..4fda01b 100644
  void
  SweetCPU::signalCPU(IOCPU *target)
  {
-@@ -214,6 +218,10 @@ SweetCPU::signalCPU(IOCPU *target)
+@@ -214,6 +223,10 @@ SweetCPU::signalCPU(IOCPU *target)
  	if (logical >= topology->num_cpus) {
  		panic("SWEET CPU: invalid SGI target %u", logical);
  	}

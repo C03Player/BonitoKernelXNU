@@ -1,4 +1,4 @@
-/* fbcopy SRC: show the hosted system's framebuffer (SRC, a file of 1080x2160 rows of 4320 bytes that xnu.ko rewrites) on /dev/fb0, whose rows may be longer. 10 Hz. */
+/* fbcopy SRC: show the hosted system's framebuffer (SRC, a file of 1080x2160 rows of 4320 bytes that xnu.ko rewrites) on /dev/fb0, whose rows may be longer. about 30 Hz. */
 #include <fcntl.h>
 #include <linux/fb.h>
 #include <stdio.h>
@@ -39,6 +39,6 @@ int main(int argc, char **argv)
 			}
 			close(src);
 		}
-		usleep(100000);
+		usleep(30000);
 	}
 }
