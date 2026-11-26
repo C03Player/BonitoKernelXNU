@@ -545,10 +545,10 @@ index 3e6bffa..3c26b89 100644
  	assert(*size < (UINT64_MAX - *base));
 diff --git a/bsd/dev/sweet_gpu_host.c b/bsd/dev/sweet_gpu_host.c
 new file mode 100644
-index 0000000..674915d
+index 0000000..afcecf0
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_host.c
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,361 @@
 +/*
 + * LINUX64 (bonito port): the GPU user client's backend when XNU is hosted inside Linux (docs/GPU-BRIDGE.md). SweetAccelerator calls these
 + * (its sweet_gpu_* names are mapped to sweet_gpu_host_* when SWEET_HOSTED); each asks adrenod, the Linux service that owns the Adreno's render node,
@@ -653,21 +653,49 @@ index 0000000..674915d
 +}
 +
 +int sweet_gpu_host_window_alloc(uint64_t *base, uint64_t *size);
++/*
++ * One GPU address space (the service's) shared by every client, as on the direct port: each client gets its own window of it (8 windows of
++ * the range msm gives), or the clients' buffers collide (test hosted28: a second client's mapping at the first's address failed, -ENOSPC).
++ */
++#define SGH_WINDOWS 8
++void sweet_gpu_host_unmap_at(uint64_t iova, uint64_t len);
++static uint32_t sgh_win_used;
++
 +int
 +sweet_gpu_host_window_alloc(uint64_t *base, uint64_t *size)
 +{
++	int rc = ENOSPC;
++
 +	if (!sweet_gpu_host_ready()) {
 +		return ENODEV;
 +	}
-+	*base = sgh_info[3];
-+	*size = sgh_info[4];
-+	return 0;
++	lck_mtx_lock(&sgh_pool);
++	for (unsigned i = 0; i < SGH_WINDOWS; i++) {
++		if (!(sgh_win_used & (1u << i))) {
++			sgh_win_used |= 1u << i;
++			*size = (sgh_info[4] / SGH_WINDOWS) & ~0xfffffull;
++			*base = sgh_info[3] + *size * i;
++			rc = 0;
++			break;
++		}
++	}
++	lck_mtx_unlock(&sgh_pool);
++	return rc;
 +}
 +
 +void sweet_gpu_host_window_free(uint64_t base);
 +void
-+sweet_gpu_host_window_free(uint64_t base __unused)
++sweet_gpu_host_window_free(uint64_t base)
 +{
++	uint64_t size = (sgh_info[4] / SGH_WINDOWS) & ~0xfffffull;
++
++	if (size == 0 || base < sgh_info[3]) {
++		return;
++	}
++	sweet_gpu_host_unmap_at(base, size);	/* whatever the client left mapped */
++	lck_mtx_lock(&sgh_pool);
++	sgh_win_used &= ~(1u << ((base - sgh_info[3]) / size));
++	lck_mtx_unlock(&sgh_pool);
 +}
 +
 +int sweet_gpu_host_pool_alloc(uint64_t bytes, uint64_t *pa);

@@ -22,3 +22,8 @@ buffer memory:  XNU physical pages (GPU pool or the client's pinned pages) -- XN
 
 Memory stays where it is: no copies. Pool pages are mapped write-combined in XNU (as on the direct port); imported IOSurface pages are cached in XNU and
 flushed by the user client before use (as on the direct port). Device information (chip id, GMEM, UBWC) comes from msm's parameters.
+
+## Tests
+- hosted28 (2026-11-26): the bridge works end to end: `adrenod` up (chip 0x6010500, GPU addresses 0x100000000 + 4 GiB), the Metal plugin opened the
+  user client, buffers were mapped and the first command buffers ran on the Adreno. Then GPU translation faults and a hang recovery: every client got
+  the whole address range, so a second client's buffers collided with the first's (`MAP ... -> -28`). Fixed: eight windows, one per client.
