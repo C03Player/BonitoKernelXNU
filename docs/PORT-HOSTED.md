@@ -11,10 +11,15 @@
   that `xnu/patches/0026-stage-hfs.sh` stages in CI). Branch `linux64-snap` = `cf3399e`'s patches, rejects merged with `wiggle`, `linux64*.h` copied to
   `EXTERNAL_HEADERS/linux64/`. Original rejects: `/usb/work/xnulinux/rej/`.
 
+## Resolved (2026-11-26)
+`xnu/linux64/9001-linux64-xnu8796.patch` = xnulinux `cf3399e` patches **0001, 0006, 0007** on our tree, every rejected hunk adapted by `xnu/linux64/port-edits.py`
+(32 files; machine flag `-mcpu=cortex-a55+crypto` on the BCM2837 base config). Left out on purpose, to be revisited:
+- 0002 host devices (needed before any disk, display or input), 0003 boot without iBoot, 0004 macOS 27 system calls, 0005 paravirtual ticket locks, 0008 replacement corecrypto.
+- 47-bit user address space and the macOS page-size changes: iOS user addresses fit the stock 39-bit, 4 KB-granule attributes; xnu-8796 already picks 16 KB VM pages above 1 GB of RAM.
+- Nothing compiled yet at the time of writing.
+
 ## Next
-1. Resolve the conflict markers: **25 files, 62 blocks** (`/usb/work/xnulinux/snap-conflicts.txt`; most: `locore.s` 16, `prng_random.c` 14).
-   The conflicts seen so far are differences in surrounding code between xnu-12377 and xnu-8796: keep our code, apply the change's intent. The 20 files
-   merged without markers still need review. Also apply `xnu-patches/corecrypto/` (the replacement crypto sources, see `scripts/vm-xnu-rebuild.sh`).
-2. Add a hosted variant to `.github/workflows/xnu.yml` (LINUX64 machine config, no PAC) and iterate on compile errors.
-3. `xnu.ko` for iOS 16 (kernel image loading, device tree, boot args, trust cache), then the kexts (disk, display, input).
+1. CI: `gh workflow run xnu.yml -f hosted=true -f machine_config=BCM2837`; fix compile and link errors (artifact `xnu-log`).
+2. Load it with `xnu.ko` on the phone: early boot to console messages. Adapt `xnu.ko` to xnu-8796 where needed.
+3. Host devices (0002) and kexts: disk, display, input.
 4. Memory: the XNU carve-out is limited by `rmtfs-mem` (docs/GATE1.md).

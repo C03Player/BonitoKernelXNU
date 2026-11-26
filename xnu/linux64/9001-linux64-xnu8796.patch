@@ -1,0 +1,2306 @@
+diff --git a/EXTERNAL_HEADERS/linux64/linux64.h b/EXTERNAL_HEADERS/linux64/linux64.h
+new file mode 100644
+index 0000000..aeb3087
+--- /dev/null
++++ b/EXTERNAL_HEADERS/linux64/linux64.h
+@@ -0,0 +1,130 @@
++// SPDX-License-Identifier: APSL-2.0
++/*
++ * Copyright (c) 2026 xnulinux contributors. All rights reserved.
++ *
++ * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
++ * This file contains Original Code and/or Modifications of Original Code as defined in and that are subject to the Apple
++ * Public Source License Version 2.0 (the 'License'). You may not use this file except in compliance with the License.
++ * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
++ */
++/*
++ * The LINUX64 machine layer: XNU hosted inside a Linux kernel by xnu.ko. Everything the rest of XNU uses of it.
++ * Copied with linux64_abi.h into EXTERNAL_HEADERS/linux64 (on every component's include path) when the patches are
++ * applied (scripts/vm-xnu-rebuild.sh).
++ *
++ * Hosted or not is decided at run time: linux64_hook is 0 when this kernel boots on hardware, and every hosted path
++ * is behind `if (linux64_hook)`.
++ */
++#ifndef _LINUX64_LINUX64_H_
++#define _LINUX64_LINUX64_H_
++
++#include <linux64/linux64_abi.h>
++
++/* Bring-up diagnostics (thread dumps from the idle loop, per-exception traces): off unless built with -DLINUX64_DEBUG=1 */
++#ifndef LINUX64_DEBUG
++#define LINUX64_DEBUG 0
++#endif
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/*
++ * xnu.ko's entry point (0: not hosted) and the slide it applied. TPIDR_EL1 is Linux's per-CPU base: XNU's kernel keeps
++ * its thread pointer in TPIDRRO_EL0 (per CPU), and user space gets its TSD there on each return to EL0.
++ */
++extern unsigned long linux64_hook;
++extern unsigned long linux64_slide;
++/* This CPU's slot in the per-CPU arrays (LINUX64_CPU_SLOT of its MPIDR): valid before XNU knows its cpu number */
++static inline unsigned
++linux64_cpu_slot(void)
++{
++	unsigned long mpidr;
++
++	__asm__ volatile ("mrs %0, MPIDR_EL1" : "=r"(mpidr));
++	return LINUX64_CPU_SLOT(mpidr);
++}
++
++/* Each CPU's interrupt-enable state: hardware interrupts stay masked while XNU runs; this flag is the virtual one */
++extern unsigned int linux64_vint[LINUX64_CPU_SLOTS];
++#define LINUX64_VINT linux64_vint[linux64_cpu_slot()]
++/* Each CPU's pending inter-processor interrupt (set by the sender, taken where XNU's interrupts are enabled again) */
++extern unsigned int linux64_ipi_pending[LINUX64_CPU_SLOTS];
++/* enum linux64_counter */
++extern unsigned long linux64_dbg[LINUX64_NCOUNTERS];
++
++/* A call into the host (enum linux64_call). The host's answer: 0 to go on. */
++static inline unsigned long
++linux64_call2(enum linux64_call call, unsigned long a1, unsigned long a2)
++{
++	register unsigned long x0 __asm__("x0") = (unsigned long)call;
++	register unsigned long x1 __asm__("x1") = a1;
++	register unsigned long x2 __asm__("x2") = a2;
++	linux64_dbg[LINUX64_CTR_LAST_CALL] = (unsigned long)call;
++	if (linux64_hook) {
++		/* a plain blr: the hook is host code, not an XNU function pointer (no pointer authentication) */
++		__asm__ volatile ("blr %3"
++		    : "+r"(x0), "+r"(x1), "+r"(x2)
++		    : "r"(linux64_hook)
++		    : "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
++		    "x30", "cc", "memory");
++	}
++	return x0;
++}
++
++static inline unsigned long
++linux64_call(enum linux64_call call, const void *a1)
++{
++	return linux64_call2(call, (unsigned long)a1, 0);
++}
++
++/* Bytes from the host's cryptographic generator (Linux's get_random_bytes) */
++static inline void
++linux64_random(void *buf, unsigned long len)
++{
++	linux64_call2(LINUX64_CALL_RANDOM, (unsigned long)buf, len);
++}
++
++/* A uniform value in [0, bound) (0 when bound is 0), by rejection: no modulo bias */
++static inline __UINT64_TYPE__
++linux64_random_uniform(__UINT64_TYPE__ bound)
++{
++	__UINT64_TYPE__ v, limit;
++
++	if (bound == 0) {
++		return 0;
++	}
++	limit = -bound % bound;	/* 2^64 mod bound: values below it would bias the result */
++	do {
++		linux64_random(&v, sizeof(v));
++	} while (v < limit);
++	return v % bound;
++}
++
++static inline void
++linux64_count(enum linux64_counter c)
++{
++	linux64_dbg[c]++;
++}
++
++/* osfmk/arm/arm_init.c */
++void linux64_assert_report(const char *file, int line, const char *expr);
++/* osfmk/arm/machine_routines_common.c: IPIs. With XNU's interrupts off: take this CPU's pending IPI, if any */
++void linux64_ipi_take(void);
++/* signal a CPU (kexts/XnuCPU's IOCPU::signalCPU): its logical number */
++void linux64_cpu_signal(unsigned int cpu);
++/* bsd/kern/kern_trustcache.c, libkern/amfi/amfi.c */
++void linux64_trust_cache_late_init(void);
++int linux64_amfi_off(void);
++/* osfmk/arm64/cswitch.s, sleh.c: user space while hosted */
++void linux64_el0_run(void *saved_state, unsigned long arg) __attribute__((noreturn));
++/* osfmk/arm/machine_routines_common.c: in a spin-wait, let the host take this CPU now and then (see arm/locks.h) */
++void linux64_spin_relax(void);
++/* osfmk/kern/sched_prim.c: every thread's state and saved frames to the host log (on the host's request) */
++void linux64_dump_threads(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* _LINUX64_LINUX64_H_ */
+diff --git a/EXTERNAL_HEADERS/linux64/linux64_abi.h b/EXTERNAL_HEADERS/linux64/linux64_abi.h
+new file mode 100644
+index 0000000..5d0db6d
+--- /dev/null
++++ b/EXTERNAL_HEADERS/linux64/linux64_abi.h
+@@ -0,0 +1,126 @@
++// SPDX-License-Identifier: APSL-2.0
++/*
++ * Copyright (c) 2026 xnulinux contributors. All rights reserved.
++ *
++ * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
++ * This file contains Original Code and/or Modifications of Original Code as defined in and that are subject to the Apple
++ * Public Source License Version 2.0 (the 'License'). You may not use this file except in compliance with the License.
++ * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
++ */
++/*
++ * The interface between a hosted XNU (the LINUX64 machine layer) and its host, xnu.ko.
++ *
++ * xnu.ko calls arm_init with linux64_hook set to its entry point. XNU calls into the host with `blr linux64_hook`:
++ * x0 = the call (enum linux64_call), x1 and x2 = its arguments; x0 on return is 0 to go on, non-zero when the host ends
++ * the run. Requests are in XNU memory (the host and XNU share the kernel address space); `result` fields are filled by
++ * the host: a count, or a negative Linux errno.
++ *
++ * linux64_dbg[] (enum linux64_counter) is read by the host's monitor thread on another CPU while XNU runs.
++ *
++ * This header is shared by both sides and includes nothing: it is copied into XNU's tree (osfmk/arm64) when the
++ * patches are applied, and xnu.ko includes it from here.
++ */
++#ifndef _LINUX64_ABI_H_
++#define _LINUX64_ABI_H_
++
++#define LINUX64_ABI_VERSION 3
++
++enum linux64_call {
++	LINUX64_CALL_KERNEL_TABLES  = 210,	/* boot: a1 = XNU's kernel L1 table; the host installs its kernel-range entries */
++	LINUX64_CALL_IDLE           = 810,	/* a1 = nanoseconds to XNU's next timer (0: one is due), a2 = this CPU's pending-IPI word
++					 * (the host does not sleep while it is set); the host runs Linux meanwhile */
++	LINUX64_CALL_PREEMPTED      = 811,	/* a host interrupt is pending: let Linux handle it; a1 = 1 from the kernel, 0 from EL0 */
++	LINUX64_CALL_WALLCLOCK      = 812,	/* a1 = u64[2]: {seconds, nanoseconds} UTC */
++	LINUX64_CALL_NET_SEND       = 816,	/* a1 = struct linux64_buf_req: one Ethernet frame */
++	LINUX64_CALL_NET_RECV       = 817,	/* a1 = struct linux64_buf_req: one Ethernet frame, result 0 when none */
++	LINUX64_CALL_INPUT_READ     = 818,	/* a1 = struct linux64_buf_req: whole struct linux64_input_event records */
++	LINUX64_CALL_KEYSTORE_RW    = 819,	/* a1 = struct linux64_rw_req on the keystore file */
++	LINUX64_CALL_DISK_RW        = 820,	/* a1 = struct linux64_rw_req on the system disk */
++	LINUX64_CALL_DISK_SIZE      = 821,	/* a1 = u64 *: the system disk's size in bytes, 0 when there is none */
++	LINUX64_CALL_RANDOM         = 822,	/* a1 = buffer, a2 = length: bytes from the host's cryptographic generator */
++	LINUX64_CALL_HOSTCALL       = 830,	/* a1 = struct linux64_hostcall_req: a message to a Linux service and its reply */
++	LINUX64_CALL_CPU_START      = 840,	/* a1 = a CPU's MPIDR, a2 = its cpu_data_t: the host enters linux64_cpu_entry(a2) there */
++	LINUX64_CALL_IPI            = 841,	/* a1 = the target CPU's MPIDR: its linux64_ipi_pending slot is set; make it look */
++	LINUX64_CALL_HALT           = 992,	/* a1 = 1 restart, 0 halt: the hosted system shut down (halt_all_cpus); the run ends */
++	LINUX64_CALL_CONSOLE_READ   = 993,	/* a1 = struct linux64_buf_req: console input bytes */
++	LINUX64_CALL_RAMDISK_RW     = 994,	/* a1 = struct linux64_rw_req on the host-file md disk */
++	LINUX64_CALL_RAMDISK_SIZE   = 995,	/* a1 = u64 *: the host-file md disk's size, 0 when there is none */
++	LINUX64_CALL_CONSOLE_WRITE  = 996,	/* a1 = bytes, a2 = length: /dev/console output */
++	LINUX64_CALL_ASSERT         = 997,	/* a1 = struct linux64_assert_info: a failed assert(); non-zero return ends the run */
++	LINUX64_CALL_KPRINTF        = 998,	/* a1 = a NUL-terminated line of kprintf/printf output */
++	LINUX64_CALL_PANIC          = 999,	/* a1 = the panic message, a2 = the caller; the run ends */
++	LINUX64_CALL_USER_ENTER     = 9100,	/* a1 = user pc: the first entry into user space */
++};
++
++/* A buffer: bytes to send or room to receive into. */
++struct linux64_buf_req {
++	void *buf;
++	__UINT64_TYPE__ len;
++	__INT64_TYPE__ result;
++};
++
++/* Reads or writes of a host file at an offset. */
++struct linux64_rw_req {
++	__UINT64_TYPE__ write;	/* 0: read into buf, 1: write from buf */
++	__UINT64_TYPE__ off;
++	__UINT64_TYPE__ len;
++	void *buf;
++	__INT64_TYPE__ result;
++};
++
++/* A host call: request and reply in XNU memory. result: the reply's length or -errno. */
++struct linux64_hostcall_req {
++	const void *req;
++	__UINT64_TYPE__ len;
++	void *reply;
++	__UINT64_TYPE__ max;
++	__INT64_TYPE__ result;
++};
++
++struct linux64_assert_info {
++	const char *file;
++	long line;
++	const char *expr;
++};
++
++/* An input event: Linux evdev's type, code and value. */
++struct linux64_input_event {
++	unsigned short type;
++	unsigned short code;
++	int value;
++};
++
++/*
++ * Per-CPU state shared by XNU and the host lives in arrays indexed by a CPU's slot: affinity 0 and affinity 1 of its
++ * MPIDR, four bits each. The host only starts CPUs whose slots differ.
++ */
++#define LINUX64_CPU_SLOTS 256
++#define LINUX64_CPU_SLOT(mpidr) ((unsigned)(((mpidr) & 0xf) | (((mpidr) >> 4) & 0xf0)))
++
++/*
++ * linux64_el0_stat[cpu][0][class]: exceptions taken from user space, by class; [cpu][1][class]: counter ticks from
++ * taking one until the CPU next enters user space (blocking included). Classes: SVC, data abort, instruction abort,
++ * host IRQ, other. By XNU CPU number (cpu_number() & (LINUX64_EL0_CPUS - 1)): small, the kernel's data must not grow.
++ */
++#define LINUX64_EL0_CLASSES 5
++#define LINUX64_EL0_CPUS 8
++
++enum linux64_counter {
++	LINUX64_CTR_IDLE_THREAD  = 0,	/* XNU's idle thread loops */
++	LINUX64_CTR_MACHINE_IDLE = 1,	/* machine_idle calls */
++	LINUX64_CTR_CPU_IDLE     = 2,	/* cpu_idle calls */
++	LINUX64_CTR_HOST_IDLE    = 3,	/* LINUX64_CALL_IDLE calls */
++	LINUX64_CTR_SWITCHES     = 4,	/* thread_invoke calls */
++	LINUX64_CTR_LAST_CALL    = 6,	/* the last enum linux64_call made */
++	LINUX64_CTR_RTCLOCK      = 7,	/* timer interrupts delivered */
++	LINUX64_CTR_THREAD       = 9,	/* the thread last switched to */
++	LINUX64_CTR_EL0_EXC      = 10,	/* exceptions from user space */
++	LINUX64_CTR_EL0_ESR      = 11,	/* the last one's ESR, FAR and PC */
++	LINUX64_CTR_EL0_FAR      = 12,
++	LINUX64_CTR_EL0_PC       = 13,
++	LINUX64_CTR_BAD_ESR      = 14,	/* the ESR of an exception the EL0 vectors could not take */
++	LINUX64_CTR_DUMP_REQ     = 15,	/* host to XNU: nonzero asks for a thread dump (linux64_dump_threads) at the next idle */
++	LINUX64_NCOUNTERS        = 16,
++};
++
++#endif /* _LINUX64_ABI_H_ */
+diff --git a/libkern/crypto/corecrypto_rand.c b/libkern/crypto/corecrypto_rand.c
+index d46815b..acea296 100644
+--- a/libkern/crypto/corecrypto_rand.c
++++ b/libkern/crypto/corecrypto_rand.c
+@@ -27,9 +27,19 @@
+  */
+ 
+ #include <libkern/crypto/crypto_internal.h>
++#include <linux64/linux64.h>
+ #include <corecrypto/ccrng.h>
++#include <string.h>
+ #include <libkern/crypto/rand.h>
+ 
++/*
++ * LINUX64 (xnulinux): until the corecrypto kext registers g_crypto_funcs (and on a hosted kernel without it), random
++ * bytes come from the host's generator (Linux's get_random_bytes, LINUX64_CALL_RANDOM). A context made before then
++ * holds nothing (linux64_rng_ctx_size).
++ */
++#define linux64_rng_fallback()  (g_crypto_funcs == NULL && linux64_hook != 0)
++#define linux64_rng_ctx_size    (2 * sizeof(uint64_t))
++
+ int
+ cc_rand_generate(void *out, size_t outlen)
+ {
+@@ -41,6 +51,9 @@ cc_rand_generate(void *out, size_t outlen)
+ 		if (rng_state != NULL) {
+ 			error = ccrng_generate(rng_state, outlen, out);
+ 		}
++	} else if (linux64_rng_fallback()) {
++		linux64_random(out, outlen);
++		error = 0;
+ 	}
+ 
+ 	return error;
+@@ -58,6 +71,10 @@ crypto_random_generate(
+ 	void *random,
+ 	size_t random_size)
+ {
++	if (linux64_rng_fallback()) {
++		linux64_random(random, random_size);
++		return;
++	}
+ 	g_crypto_funcs->random_generate_fn(ctx, random, random_size);
+ }
+ 
+@@ -67,12 +84,19 @@ crypto_random_uniform(
+ 	uint64_t bound,
+ 	uint64_t *random)
+ {
++	if (linux64_rng_fallback()) {
++		*random = linux64_random_uniform(bound);
++		return;
++	}
+ 	g_crypto_funcs->random_uniform_fn(ctx, bound, random);
+ }
+ 
+ size_t
+ crypto_random_kmem_ctx_size(void)
+ {
++	if (linux64_rng_fallback()) {
++		return linux64_rng_ctx_size;
++	}
+ 	return g_crypto_funcs->random_kmem_ctx_size_fn();
+ }
+ 
+@@ -80,5 +104,9 @@ void
+ crypto_random_kmem_init(
+ 	crypto_random_ctx_t ctx)
+ {
++	if (linux64_rng_fallback()) {
++		memset(ctx, 0, linux64_rng_ctx_size);
++		return;
++	}
+ 	g_crypto_funcs->random_kmem_init_fn(ctx);
+ }
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index c6e2d70..c230c11 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -60,7 +60,8 @@ MACHINE_FLAGS_ARM64_T8101 = -DARM64_BOARD_CONFIG_T8101			-mcpu=apple-a14
+ MACHINE_FLAGS_ARM64_T8103 = -DARM64_BOARD_CONFIG_T8103                  -mcpu=apple-a14
+ MACHINE_FLAGS_ARM64_T6000 = -DARM64_BOARD_CONFIG_T6000 		-mcpu=apple-a14
+ MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
+-MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
++# LINUX64 (hosted on Kryo 360): name the CPU, or Apple clang emits instructions of its default Apple core
++MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837             -mcpu=cortex-a55+crypto
+ # The CPU, not just the architecture: with -arch arm64 Apple clang's default CPU is an Apple core,
+ # and -march=armv8.2-a+crypto kept its features, so clang vectorized XORs into EOR3 (FEAT_SHA3),
+ # an undefined instruction on the A76/A55 (panic in a6_blit_ib). Cortex-A55 = the ISA both clusters share.
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index 42362c5..1fd9338 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -30,6 +30,7 @@
+  */
+ 
+ #include <debug.h>
++#include <linux64/linux64.h>
+ #include <mach_ldebug.h>
+ #include <mach_kdp.h>
+ 
+@@ -210,6 +211,13 @@ extern vm_offset_t segLOWESTKC, segHIGHESTKC, segLOWESTROKC, segHIGHESTROKC;
+ extern vm_offset_t segLOWESTAuxKC, segHIGHESTAuxKC, segLOWESTROAuxKC, segHIGHESTROAuxKC;
+ extern vm_offset_t segLOWESTRXAuxKC, segHIGHESTRXAuxKC, segHIGHESTNLEAuxKC;
+ 
++/* LINUX64 (xnulinux): the hosted machine layer's state (linux64/linux64.h), set by xnu.ko before arm_init */
++uintptr_t linux64_hook;
++uintptr_t linux64_slide;
++unsigned int linux64_vint[LINUX64_CPU_SLOTS];
++unsigned int linux64_ipi_pending[LINUX64_CPU_SLOTS];
++unsigned long linux64_dbg[LINUX64_NCOUNTERS];
++
+ static void
+ arm_slide_rebase_and_sign_image(void)
+ {
+@@ -267,10 +275,14 @@ arm_slide_rebase_and_sign_image(void)
+ 		 * using hardcoded kernel link address
+ 		 */
+ 		slide = (uintptr_t)k_mh - VM_KERNEL_LINK_ADDRESS;
++		if (linux64_hook) {
++			/* LINUX64: xnu.ko loaded, slid (load commands too) and signed the image already. */
++			slide = linux64_slide;
++		}
+ 
+ 		/* rebase and sign jops */
+ 		static_kernelcache = &__thread_starts_sect_end[0] != &__thread_starts_sect_start[0];
+-		if (static_kernelcache) {
++		if (static_kernelcache && !linux64_hook) {
+ 			rebase_threaded_starts( &__thread_starts_sect_start[0],
+ 			    &__thread_starts_sect_end[0],
+ 			    (uintptr_t)k_mh, (uintptr_t)k_mh - slide, slide);
+@@ -335,6 +347,28 @@ arm_setup_pre_sign(void)
+  *		Function:		Runs on the boot CPU, once, on entry from iBoot.
+  */
+ 
++/*
++ * LINUX64 (xnulinux): where a secondary CPU starts (LINUX64_CALL_CPU_START), on the host's thread for that CPU, in
++ * its own world (the host's page tables, which hold XNU's kernel mappings; XNU's keys). start_cpu's work on hardware
++ * (MMU, vectors, stacks) is the host's; arm_init_cpu sets the thread pointer and goes on into the scheduler.
++ */
++void arm_init_cpu(cpu_data_t *cpu_data_ptr, uint64_t hib_header_phys);
++void linux64_cpu_entry(cpu_data_t *cpu_data_ptr) __attribute__((noreturn));
++void
++linux64_cpu_entry(cpu_data_t *cpu_data_ptr)
++{
++	arm_init_cpu(cpu_data_ptr, 0);
++	__builtin_unreachable();
++}
++
++/* LINUX64: a failed assert() while hosted (see kern/assert.h); the host may end the run. */
++void
++linux64_assert_report(const char *file, int line, const char *expr)
++{
++	struct linux64_assert_info a = { file, line, expr };
++	linux64_call(LINUX64_CALL_ASSERT, &a);
++}
++
+ __startup_func
+ void
+ arm_init(
+diff --git a/osfmk/arm/cpu_data.h b/osfmk/arm/cpu_data.h
+index 60c931a..a9c9de7 100644
+--- a/osfmk/arm/cpu_data.h
++++ b/osfmk/arm/cpu_data.h
+@@ -59,8 +59,9 @@ current_thread_fast(void)
+ 	 *
+ 	 * and ignores the "attribute const", so do it the "dumb" way.
+ 	 */
++	/* LINUX64 (xnulinux): TPIDR_EL1 belongs to Linux; XNU's kernel keeps its thread pointer in TPIDRRO_EL0 */
+ 	unsigned long result;
+-	__asm__ ("mrs %0, TPIDR_EL1" : "=r" (result));
++	__asm__ ("mrs %0, TPIDRRO_EL0" : "=r" (result));
+ 	return __unsafe_forge_single(thread_t, result);
+ #else
+ 	// TPIDRPRW
+@@ -95,7 +96,7 @@ current_thread_volatile(void)
+ 	 */
+ #if defined(__arm64__)
+ 	unsigned long result;
+-	__asm__ volatile ("mrs %0, TPIDR_EL1" : "=r" (result));
++	__asm__ volatile ("mrs %0, TPIDRRO_EL0" : "=r" (result));	/* LINUX64: see current_thread_fast */
+ 	return __unsafe_forge_single(thread_t, result);
+ #else
+ 	// TPIDRPRW
+@@ -108,7 +109,16 @@ current_thread_volatile(void)
+ static inline vm_offset_t
+ exception_stack_pointer(void)
+ {
+-	vm_offset_t result = 0;
++	vm_offset_t result = 0, spsel;
++	/*
++	 * LINUX64 (xnulinux): hosted XNU runs on Linux's SP_EL1 stack, and SP_EL0 is
++	 * Linux's `current`; never flip SPSel. When already on SP_EL1, sp is the answer.
++	 */
++	__asm__ volatile ("mrs %0, SPSel" : "=r" (spsel));
++	if (spsel & 1) {
++		__asm__ volatile ("mov %0, sp" : "=r" (result));
++		return result;
++	}
+ 	__asm__ volatile (
+                  "msr		SPSel, #1  \n"
+                  "mov		%0, sp     \n"
+diff --git a/osfmk/arm/locks.h b/osfmk/arm/locks.h
+index 2201051..6dc5ed8 100644
+--- a/osfmk/arm/locks.h
++++ b/osfmk/arm/locks.h
+@@ -123,7 +123,10 @@ extern bool                has_lock_pv;
+ #define LOCK_SNOOP_SPINS        100
+ #define LOCK_PRETEST            0
+ 
+-#define wait_for_event()        __builtin_arm_wfe()
++/* LINUX64: hosted, a waiting CPU lets the host take its interrupts every ~1 ms (linux64_spin_relax) */
++extern unsigned long linux64_hook;
++extern void linux64_spin_relax(void);
++#define wait_for_event()        ({ __builtin_arm_wfe(); if (__improbable(linux64_hook)) linux64_spin_relax(); })
+ 
+ #if SCHED_HYGIENE_DEBUG
+ #define lock_disable_preemption_for_thread(t) ({                                \
+diff --git a/osfmk/arm/machdep_call.c b/osfmk/arm/machdep_call.c
+index 7dc0e57..349d015 100644
+--- a/osfmk/arm/machdep_call.c
++++ b/osfmk/arm/machdep_call.c
+@@ -38,6 +38,7 @@
+ 
+ #include <kern/thread.h>
+ #include <mach/mach_types.h>
++#include <linux64/linux64.h>
+ #include <arm/machdep_call.h>
+ #if __arm64__
+ #include <arm64/machine_machdep.h>
+@@ -49,6 +50,10 @@ uintptr_t
+ get_tpidrro(void)
+ {
+ 	uintptr_t       uthread;
++	if (linux64_hook) {
++		/* LINUX64 (xnulinux): in the kernel TPIDRRO_EL0 is the thread pointer; EL0 gets cthread_self on return */
++		return current_thread()->machine.cthread_self;
++	}
+ 	__asm__ volatile ("mrs %0, TPIDRRO_EL0" : "=r" (uthread));
+ 	return uthread;
+ }
+@@ -56,6 +61,9 @@ get_tpidrro(void)
+ void
+ set_tpidrro(uintptr_t uthread)
+ {
++	if (linux64_hook) {
++		return;	/* LINUX64: loaded from cthread_self on the way back to user space (linux64_el0_run) */
++	}
+ 	__asm__ volatile ("msr TPIDRRO_EL0, %0" : : "r" (uthread));
+ }
+ 
+diff --git a/osfmk/arm/machine_routines_common.c b/osfmk/arm/machine_routines_common.c
+index a6af1b9..85babed 100644
+--- a/osfmk/arm/machine_routines_common.c
++++ b/osfmk/arm/machine_routines_common.c
+@@ -27,6 +27,7 @@
+  */
+ 
+ #include <arm/machine_cpu.h>
++#include <linux64/linux64.h>
+ #include <arm/cpu_internal.h>
+ #include <arm/cpuid.h>
+ #include <arm/cpuid_internal.h>
+@@ -1043,6 +1044,60 @@ ml_set_interrupts_enabled_with_debug(boolean_t enable, boolean_t __unused debug)
+ 
+ 	thread = current_thread();
+ 
++	{
++		/*
++		 * LINUX64 (xnulinux): XNU runs on its own kernel stacks, where Linux cannot take an interrupt
++		 * (its entry code treats a foreign stack as overflow). Keep IRQs masked in hardware and track
++		 * XNU's view in linux64_vint (per CPU); timer "interrupts" are delivered from cpu_idle.
++		 */
++		if (linux64_hook) {
++			unsigned int slot = linux64_cpu_slot();
++			boolean_t was = linux64_vint[slot] ? TRUE : FALSE;
++			if (enable && !was) {
++				/*
++				 * Kernel code that runs long without going to user space or idle never sees a host interrupt
++				 * (hardware IRQs stay masked in XNU's kernel), which stalls Linux (RCU) and stops XNU's own
++				 * clock. Where XNU would take a pending interrupt, re-enabling interrupts, let Linux run its
++				 * interrupts every 2 ms and deliver XNU's timer if it is due, as the IRQ path does; and take an
++				 * IPI another CPU sent.
++				 */
++				static uint64_t linux64_last_kyield[LINUX64_CPU_SLOTS];
++				uint64_t now = mach_absolute_time();
++				cpu_data_t *cdp = thread->machine.CpuDatap;
++				if (cdp->cpu_int_state == NULL) {
++					if (now - linux64_last_kyield[slot] > 48000) {
++						extern void rtclock_intr(unsigned int);
++						linux64_last_kyield[slot] = now;
++						/*
++						 * Not with preemption off (a spinlock held): Linux may reschedule this CPU's thread
++						 * away for as long as it likes, and every other CPU spins on the lock until XNU's
++						 * ticket-lock timeout panics.
++						 */
++						if (get_preemption_level() == 0) {
++							linux64_call2(LINUX64_CALL_PREEMPTED, 1, 0);
++						}
++						if (cdp->rtcPop != 0 && cdp->rtcPop != 0xFFFFFFFFFFFFFFFFULL && mach_absolute_time() >= cdp->rtcPop) {
++							cdp->cpu_decrementer = -1;
++							rtclock_intr(FALSE);
++						}
++					}
++					linux64_ipi_take();
++				}
++				if (get_preemption_level() == 0) {
++					while (thread->machine.CpuDatap->cpu_pending_ast & AST_URGENT) {
++						ast_taken_kernel();
++					}
++				}
++				/* ast_taken_kernel may have switched this thread out: it can be back on another CPU */
++				linux64_vint[linux64_cpu_slot()] = 1;
++			} else if (!enable) {
++				linux64_vint[slot] = 0;
++			}
++			return was;
++		}
++	}
++
++
+ 	state = __builtin_arm_rsr("DAIF");
+ 
+ 	if (enable && (state & DAIF_IRQF)) {
+@@ -1267,6 +1322,68 @@ ml_early_cpu_max_number(void)
+ 	return ml_get_max_cpu_number();
+ }
+ 
++/*
++ * LINUX64 (xnulinux): inter-processor interrupts while hosted. The sender sets the target's pending slot and asks the
++ * host to make the target look (wake it from its idle call, or interrupt its user code); the target takes it where its
++ * interrupts are enabled again (ml_set_interrupts_enabled), when the host interrupted its user code, and after idle,
++ * as the IPI's FIQ would be taken on hardware: cpu_signal_handler, with interrupts off.
++ */
++/*
++ * LINUX64 (xnulinux): called from spin-waits (wait_for_event, the cross-call wait). The CPU being waited for may be
++ * held by the host: in a call into it (file I/O, idle) or running Linux there. On hardware this CPU would take
++ * interrupts meanwhile; hosted, with interrupts masked here, the host would never get this CPU back, and if the other
++ * CPU's host side waits for this one (an IPI, a lock), neither moves. So every ~1 ms of spinning the host takes this
++ * CPU's interrupts (LINUX64_CALL_PREEMPTED). Nothing of XNU's runs here (no IPI, no AST): the spinning code may hold
++ * per-CPU lock state that a context switch would break.
++ */
++static uint64_t linux64_last_relax[LINUX64_CPU_SLOTS];
++void
++linux64_spin_relax(void)
++{
++	unsigned int slot = linux64_cpu_slot();
++	uint64_t now = mach_absolute_time();
++
++	if (now - linux64_last_relax[slot] < 24000) {     /* ~1 ms of the 24 MHz timebase */
++		return;
++	}
++	linux64_last_relax[slot] = now;
++	linux64_call2(LINUX64_CALL_PREEMPTED, 1, 0);
++	/*
++	 * Spinning with XNU's interrupts enabled, a CPU takes another CPU's IPI on hardware (its FIQ): the other may be
++	 * waiting for exactly that (a cross-call's acknowledgment) before it lets go of what this one spins on. Take a
++	 * pending one here as the FIQ would, interrupts off around the handler; no AST, no context switch.
++	 */
++	if (linux64_vint[slot] && getCpuDatap()->cpu_int_state == NULL) {
++		linux64_vint[slot] = 0;
++		linux64_ipi_take();
++		linux64_vint[slot] = 1;
++	}
++}
++
++void
++linux64_ipi_take(void)
++{
++	unsigned int slot = linux64_cpu_slot();
++
++	if (os_atomic_load(&linux64_ipi_pending[slot], relaxed) && os_atomic_xchg(&linux64_ipi_pending[slot], 0, acquire)) {
++		cpu_signal_handler();
++	}
++}
++
++void
++linux64_cpu_signal(unsigned int cpu)
++{
++	cpu_data_t *target = CpuDataEntries[cpu].cpu_data_vaddr;
++	uint64_t mpidr;
++
++	if (target == NULL) {
++		return;
++	}
++	mpidr = target->cpu_phys_id;
++	os_atomic_store(&linux64_ipi_pending[LINUX64_CPU_SLOT(mpidr)], 1, release);
++	linux64_call2(LINUX64_CALL_IPI, mpidr, 0);
++}
++
+ void
+ ml_set_max_cpus(unsigned int max_cpus __unused)
+ {
+@@ -1285,6 +1402,12 @@ ml_wait_max_cpus(void)
+ {
+ 	assert(lockdown_done);
+ 	lck_mtx_lock(&max_cpus_lock);
++	{
++		/* LINUX64 (xnulinux): hosted without the CPU kext that calls ml_set_max_cpus(); one CPU, known now. */
++		if (linux64_hook) {
++			max_cpus_initialized = MAX_CPUS_SET;
++		}
++	}
+ 	while (max_cpus_initialized != MAX_CPUS_SET) {
+ 		max_cpus_initialized = MAX_CPUS_WAIT;
+ 		lck_mtx_sleep(&max_cpus_lock, LCK_SLEEP_DEFAULT, &max_cpus_initialized, THREAD_UNINT);
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+index bd099f8..da8b604 100644
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -3229,6 +3229,10 @@ pmap_destroy_internal(
+ 
+ 
+ 
++	if (pmap->hw_tte == pmap->tte) {
++		pmap->hw_tte = (tt_entry_t *) NULL;   /* LINUX64: a level-0 root is both; free it once, below */
++		pmap->hw_ttep = 0;
++	}
+ 	if (pmap->tte) {
+ 		pmap_tt1_deallocate(pmap, pmap->tte, pmap_root_alloc_size(pmap), 0);
+ 		pmap->tte = (tt_entry_t *) NULL;
+@@ -10075,8 +10079,12 @@ pmap_cache_attributes(
+ 	assert(vm_last_phys > vm_first_phys); // Check that pmap has been bootstrapped
+ 
+ 	if (!pa_valid(paddr)) {
++		extern unsigned long linux64_hook;
+ 		pmap_io_range_t *io_rgn = pmap_find_io_attr(paddr);
+-		return (io_rgn == NULL) ? VM_WIMG_IO : io_rgn->wimg;
++		if (io_rgn != NULL) {
++			return io_rgn->wimg;
++		}
++		return linux64_hook ? VM_WIMG_DEFAULT : VM_WIMG_IO;    /* LINUX64: the host's RAM */
+ 	}
+ 
+ 	result = VM_WIMG_DEFAULT;
+diff --git a/osfmk/arm/rtclock.c b/osfmk/arm/rtclock.c
+index 5989b48..2ed9325 100644
+--- a/osfmk/arm/rtclock.c
++++ b/osfmk/arm/rtclock.c
+@@ -38,6 +38,7 @@
+  */
+ 
+ #include <mach/mach_types.h>
++#include <linux64/linux64.h>
+ 
+ #include <kern/clock.h>
+ #include <kern/thread.h>
+@@ -327,6 +328,7 @@ rtclock_intr(__unused unsigned int is_user_context)
+ 	struct arm_saved_state * regs;
+ 	unsigned int             user_mode;
+ 	uintptr_t                pc;
++	linux64_count(LINUX64_CTR_RTCLOCK);	/* LINUX64: for the host's monitor */
+ 
+ 	cdp = getCpuDatap();
+ 
+@@ -358,6 +360,15 @@ rtclock_intr(__unused unsigned int is_user_context)
+ 		pc = 0;
+ 		user_mode = 0;
+ 	}
++	uint64_t sample_fp = regs ? get_saved_state_fp(regs) : 0;
++	if (regs == NULL && linux64_hook) {
++		/*
++		 * LINUX64: hosted, a kernel-mode timer is delivered by a call from where XNU re-enables interrupts (or from idle),
++		 * not by an exception with a saved state: profile the caller (pc-sample charges it to the code that masked).
++		 */
++		pc = (uintptr_t)__builtin_return_address(0);
++		sample_fp = *(uint64_t *)__builtin_frame_address(0);
++	}
+ 	if (abstime >= cdp->rtcPop) {
+ 		/* Log the interrupt service latency (-ve value expected by tool) */
+ 		KDBG_RELEASE(DECR_TRAP_LATENCY | DBG_FUNC_NONE,
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index cd7cc4c..54595b5 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -27,6 +27,7 @@
+  */
+ 
+ #include <mach_kdp.h>
++#include <linux64/linux64.h>
+ #include <debug.h>
+ 
+ #include <kern/assert.h>
+@@ -2185,7 +2186,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	sweet_early_map_final();
+ #endif
+ 	arm_vm_physmap_init(args);
+-	set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
++	if (linux64_hook) {
++		/*
++		 * LINUX64 (xnulinux): TTBR1 is Linux's. The host installs XNU's kernel L1 entries
++		 * (the kernel VA range only) into Linux's top-level L1 table; TTBR0 stays Linux's.
++		 */
++		linux64_call(LINUX64_CALL_KERNEL_TABLES, cpu_tte);
++	} else {
++		set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
++	}
+ 
+ 	ml_enable_monitor();
+ 
+@@ -2193,7 +2202,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	/* The final TTBR1 is live; leave the outgoing VA=PA framebuffer alias. */
+ 	sweet_early_relocate(SWEET_EARLY_FB_VA + (SWEET_EARLY_FB_PA - SWEET_EARLY_FB_BLOCK_PA));
+ #endif
+-	set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
++	if (!linux64_hook) {
++		set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
++	}
+ 
+ 	flush_mmu_tlb();
+ 	sweet_early_mark(10, "TTBR0 off; TLB flushed");
+@@ -2260,9 +2271,14 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 		vm_kernel_etext = segTEXTEXECB + segSizeTEXTEXEC;
+ 		vm_kernel_slid_top = vm_slinkedit;
+ 	} else {
+-		assert(segDATACONSTB == segTEXTB + segSizeTEXT);
+-		assert(segTEXTEXECB == segDATACONSTB + segSizeDATACONST);
+-		vm_kernel_etext = segTEXTB + segSizeTEXT + segSizeDATACONST + segSizeTEXTEXEC;
++		if (linux64_hook) {
++			/* LINUX64: this kernel is linked with the KC segment layout (k27): segments are not adjacent. */
++			vm_kernel_etext = segTEXTEXECB + segSizeTEXTEXEC;
++		} else {
++			assert(segDATACONSTB == segTEXTB + segSizeTEXT);
++			assert(segTEXTEXECB == segDATACONSTB + segSizeDATACONST);
++			vm_kernel_etext = segTEXTB + segSizeTEXT + segSizeDATACONST + segSizeTEXTEXEC;
++		}
+ 		vm_kernel_slid_top = vm_prelink_einfo;
+ 	}
+ 
+diff --git a/osfmk/arm64/asm.h b/osfmk/arm64/asm.h
+index 477f1c3..ba91590 100644
+--- a/osfmk/arm64/asm.h
++++ b/osfmk/arm64/asm.h
+@@ -132,7 +132,7 @@
+ .endmacro
+ 
+ .macro READ_THREAD
+-	mrs $0, TPIDR_EL1
++	mrs $0, TPIDRRO_EL0
+ .endmacro
+ 
+ .macro BRANCH_EXTERN
+diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
+index b082a10..e3888db 100644
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -32,6 +32,7 @@
+  */
+ 
+ #include <pexpert/arm64/board_config.h>
++#include <linux64/linux64.h>
+ #include <kern/kalloc.h>
+ #include <kern/machine.h>
+ #include <kern/cpu_number.h>
+@@ -101,6 +102,7 @@ extern void __attribute__((noreturn)) arm64_prepare_for_sleep(boolean_t deep_sle
+ extern void __attribute__((noreturn)) arm64_prepare_for_sleep(boolean_t deep_sleep);
+ #endif
+ extern void arm64_force_wfi_clock_gate(void);
++extern void rtclock_intr(unsigned int);
+ #if defined(APPLETYPHOON)
+ // <rdar://problem/15827409>
+ extern void typhoon_prepare_for_wfi(void);
+@@ -404,6 +406,11 @@ wfe_to_deadline_or_interrupt(uint32_t cid, uint64_t wfe_deadline, cpu_data_t *cd
+ 	 * another core/cluster in a powergated state.
+ 	 * Hence, optionally unmask IRQs+FIQs across WFE.
+ 	 */
++	{
++		if (linux64_hook) {
++			unmask = false;	/* LINUX64: never unmask hardware IRQs while hosted */
++		}
++	}
+ 	if (unmask) {
+ 		/* Latch SW IRQ+FIQ counter prior to unmasking
+ 		 * interrupts.
+@@ -477,6 +484,37 @@ wfe_to_deadline_or_interrupt(uint32_t cid, uint64_t wfe_deadline, cpu_data_t *cd
+ 	return ipending || (nirqc != irqc);
+ }
+ 
++/*
++ * LINUX64 (xnulinux): hosted, idle goes straight to the host, which runs Linux until XNU's next timer deadline and
++ * comes back; the due timer is then delivered here as its interrupt would be. No WFE/WFI and no timer interrupt of
++ * XNU's own apply (idle_enable stays FALSE without the CPU kext: cpu_machine_init never runs).
++ */
++static void
++linux64_cpu_idle(cpu_data_t *cpu_data_ptr)
++{
++	uint64_t now = mach_absolute_time();
++	uint64_t deadline = cpu_data_ptr->rtcPop;
++	uint64_t ns = 0;	/* a timer already due: no sleep, only let Linux take its interrupts */
++
++	linux64_count(LINUX64_CTR_CPU_IDLE);
++	if (deadline == 0 || deadline == EndOfAllTime) {
++		ns = NSEC_PER_MSEC;	/* no timer armed: check the run queue again in 1 ms */
++	} else if (deadline > now) {
++		/* relative: XNU's timebase (mach_absolute_time) is offset from the host's counter */
++		absolutetime_to_nanoseconds(deadline - now, &ns);
++	}
++	if (linux64_dbg[LINUX64_CTR_DUMP_REQ] && os_atomic_xchg(&linux64_dbg[LINUX64_CTR_DUMP_REQ], 0, relaxed)) {
++		linux64_dump_threads();	/* the host asked: who is blocked, and where */
++	}
++	linux64_count(LINUX64_CTR_HOST_IDLE);
++	linux64_call2(LINUX64_CALL_IDLE, ns, (unsigned long)&linux64_ipi_pending[linux64_cpu_slot()]);
++	cpu_data_ptr->cpu_decrementer = -1;
++	rtclock_intr(FALSE);
++	linux64_ipi_take();		/* what woke the host's idle call early, if it was another CPU */
++	ClearIdlePop(TRUE);
++	cpu_idle_exit(FALSE);
++}
++
+ /*
+  *	Routine:	cpu_idle
+  *	Function:
+@@ -488,6 +526,9 @@ cpu_idle(void)
+ 	uint64_t        new_idle_timeout_ticks = 0x0ULL, lastPop;
+ 	bool idle_disallowed = false;
+ 
++	if (linux64_hook) {
++		linux64_cpu_idle(cpu_data_ptr);
++	}
+ 	if (__improbable((!idle_enable))) {
+ 		idle_disallowed = true;
+ 	} else if (__improbable(cpu_data_ptr->cpu_signal & SIGPdisabled)) {
+@@ -956,7 +997,12 @@ cpu_start(int cpu)
+ 			break;
+ 		}
+ #endif
+-		(void) PE_cpu_start(cpu_data_ptr->cpu_id, (vm_offset_t)NULL, (vm_offset_t)NULL);
++		if (linux64_hook) {
++			/* LINUX64: the host starts the CPU, on a Linux CPU of that MPIDR, at linux64_cpu_entry */
++			linux64_call2(LINUX64_CALL_CPU_START, cpu_data_ptr->cpu_phys_id, (unsigned long)cpu_data_ptr);
++		} else {
++			(void) PE_cpu_start(cpu_data_ptr->cpu_id, (vm_offset_t)NULL, (vm_offset_t)NULL);
++		}
+ 	}
+ 
+ 	return KERN_SUCCESS;
+diff --git a/osfmk/arm64/cswitch.s b/osfmk/arm64/cswitch.s
+index c08a994..8ce5a08 100644
+--- a/osfmk/arm64/cswitch.s
++++ b/osfmk/arm64/cswitch.s
+@@ -175,15 +175,13 @@
+  *  arg2 - Scratch register
+  */
+ .macro	set_thread_registers
+-	msr		TPIDR_EL1, $0						// Write new thread pointer to TPIDR_EL1
++	msr		TPIDRRO_EL0, $0						// LINUX64: the thread pointer (TPIDRRO_EL0 is Linux's; EL0's TPIDRRO is set on return to user space)
+ 	ldr		$1, [$0, ACT_CPUDATAP]
+ 	str		$0, [$1, CPU_ACTIVE_THREAD]
+ 
+ 	ldrsh	$2, [$1, CPU_NUMBER_GS]
+ 	msr		TPIDR_EL0, $2
+ 
+-	ldr		$1, [$0, TH_CTH_SELF]				// Get cthread pointer
+-	msr		TPIDRRO_EL0, $1
+ 
+ #if DEBUG || DEVELOPMENT
+ 	ldr		$1, [$0, TH_THREAD_ID]				// Save the bottom 32-bits of the thread ID into
+@@ -289,7 +287,7 @@ LEXT(machine_load_context)
+ 	.globl	EXT(Call_continuation)
+ 
+ LEXT(Call_continuation)
+-	mrs		x4, TPIDR_EL1						// Get the current thread pointer
++	mrs		x4, TPIDRRO_EL0						// Get the current thread pointer
+ 
+ 	/* ARM64_TODO arm loads the kstack top instead of arg4. What should we use? */
+ 	ldr		x5, [x4, TH_KSTACKPTR]				// Get the top of the kernel stack
+@@ -315,7 +313,7 @@ LEXT(Call_continuation)
+ #else
+ 	blr		x20									// Branch to the continuation
+ #endif
+-	mrs		x0, TPIDR_EL1						// Get the current thread pointer
++	mrs		x0, TPIDRRO_EL0						// Get the current thread pointer
+ 	b		EXT(thread_terminate)				// Kill the thread
+ 
+ 
+@@ -348,7 +346,7 @@ Lswitch_threads:
+ 	.globl	EXT(Shutdown_context)
+ 
+ LEXT(Shutdown_context)
+-	mrs		x10, TPIDR_EL1							// Get thread pointer
++	mrs		x10, TPIDRRO_EL0							// Get thread pointer
+ 	ldr		x11, [x10, TH_KSTACKPTR]				// Get the top of the kernel stack
+ 	save_general_registers	x11, 12
+ 	msr		DAIFSet, #(DAIFSC_FIQF | DAIFSC_IRQF)	// Disable interrupts
+@@ -366,7 +364,7 @@ LEXT(Shutdown_context)
+ 	.globl	EXT(Idle_context)
+ 
+ LEXT(Idle_context)
+-	mrs		x0, TPIDR_EL1						// Get thread pointer
++	mrs		x0, TPIDRRO_EL0						// Get thread pointer
+ 	ldr		x1, [x0, TH_KSTACKPTR]				// Get the top of the kernel stack
+ 	save_general_registers	x1, 2
+ 	ldr		x1, [x0, ACT_CPUDATAP]				// Get current cpu
+@@ -383,7 +381,7 @@ LEXT(Idle_context)
+ 	.globl	EXT(Idle_load_context)
+ 
+ LEXT(Idle_load_context)
+-	mrs		x0, TPIDR_EL1						// Get thread pointer
++	mrs		x0, TPIDRRO_EL0						// Get thread pointer
+ 	ldr		x1, [x0, TH_KSTACKPTR]				// Get the top of the kernel stack
+ 	load_general_registers	x1, 2
+ 	set_process_dependent_keys_and_sync_context	x0, x1, x2, x3, w4
+@@ -397,3 +395,199 @@ LEXT(machine_set_current_thread)
+ 
+ 
+ /* vim: set ts=4: */
++
++/*
++ * LINUX64 (xnulinux): user space while hosted. linux64_el0_run(ss) enters EL0 with the user state in ss
++ * (IRQs stay masked at EL0), on this CPU, with VBAR_EL1 pointing at linux64_el0_vectors and SP_EL0 holding the
++ * user sp. What the kernels need back on the next exception from EL0 (XNU's thread pointer, which TPIDRRO_EL0 holds in
++ * the kernel and the user's TSD at EL0; Linux's vectors, its `current` in SP_EL0, its shadow call stack in x18 and
++ * SCTLR_EL1) goes in a block at the top of the thread's kernel stack, where SP_EL1 points at that exception: per thread,
++ * so per CPU. The exception builds a register frame below it, puts all that back and calls
++ * linux64_el0_exception(frame) (sleh.c), which hands it to sleh_synchronous and returns to user space again.
++ */
++#define LINUX64_EL0_BLOCK	64		// thread, SP_EL0, VBAR_EL1, x18, SCTLR_EL1
++#define LINUX64_EL0_FRAME	(36 * 8 + 528)	// struct linux64_el0_frame (sleh.c)
++
++	.text
++	.align 2
++	.globl EXT(linux64_el0_run)
++LEXT(linux64_el0_run)
++	ARM64_PROLOG
++	mrs		x11, TPIDRRO_EL0						// this CPU's thread
++	LOAD_KERN_STACK_TOP	dst=x12, src=x11, tmp=x13
++	sub		x15, x12, #LINUX64_EL0_BLOCK
++	str		x11, [x15, #0]
++	mrs		x10, SP_EL0
++	str		x10, [x15, #8]
++	mrs		x10, VBAR_EL1
++	str		x10, [x15, #16]
++	str		x18, [x15, #24]
++	mrs		x10, SCTLR_EL1
++	str		x10, [x15, #32]
++	adrp	x10, EXT(linux64_el0_vectors)@page
++	add		x10, x10, EXT(linux64_el0_vectors)@pageoff
++	msr		VBAR_EL1, x10
++	ldr		x10, [x0, SS64_SP]
++	msr		SP_EL0, x10
++	ldr		x10, [x0, SS64_PC]
++	msr		ELR_EL1, x10
++	ldr		w10, [x0, SS64_CPSR]
++	orr		w10, w10, #0x40						// FIQ stays masked at EL0 while hosted; a (Linux) IRQ preempts user code
++	msr		SPSR_EL1, x10
++	// the user's NEON/FP state (arm_context_t ns, right after ss): upcalls may let Linux schedule, which reuses the registers
++	add		x9, x0, NS64_Q0
++	ldp		q0, q1, [x9, #0]
++	ldp		q2, q3, [x9, #32]
++	ldp		q4, q5, [x9, #64]
++	ldp		q6, q7, [x9, #96]
++	ldp		q8, q9, [x9, #128]
++	ldp		q10, q11, [x9, #160]
++	ldp		q12, q13, [x9, #192]
++	ldp		q14, q15, [x9, #224]
++	ldp		q16, q17, [x9, #256]
++	ldp		q18, q19, [x9, #288]
++	ldp		q20, q21, [x9, #320]
++	ldp		q22, q23, [x9, #352]
++	ldp		q24, q25, [x9, #384]
++	ldp		q26, q27, [x9, #416]
++	ldp		q28, q29, [x9, #448]
++	ldp		q30, q31, [x9, #480]
++	ldr		w10, [x9, #512]
++	msr		FPSR, x10
++	ldr		w10, [x9, #516]
++	msr		FPCR, x10
++	mov		sp, x15								// the next exception from EL0 starts below the block
++	ldr		x10, [x11, TH_CTH_SELF]				// the user's TSD (Darwin reads it from TPIDRRO_EL0)
++	msr		TPIDRRO_EL0, x10
++	/*
++	 * x1: JOP off for this thread (arm64, not arm64e): EnIA (31) and EnDA (27) off at EL0. Only after the last
++	 * kernel pointer authentication (LOAD_KERN_STACK_TOP authenticates; with EnDA off it would trap to brk).
++	 */
++	cbz		x1, 1f
++	mrs		x10, SCTLR_EL1
++	mov		x11, #((1 << 31) | (1 << 27))
++	bic		x10, x10, x11
++	msr		SCTLR_EL1, x10
++1:
++	isb
++	add		x30, x0, SS64_X0
++	ldp		x2, x3, [x30, #16]
++	ldp		x4, x5, [x30, #32]
++	ldp		x6, x7, [x30, #48]
++	ldp		x8, x9, [x30, #64]
++	ldp		x10, x11, [x30, #80]
++	ldp		x12, x13, [x30, #96]
++	ldp		x14, x15, [x30, #112]
++	ldp		x16, x17, [x30, #128]
++	ldp		x18, x19, [x30, #144]
++	ldp		x20, x21, [x30, #160]
++	ldp		x22, x23, [x30, #176]
++	ldp		x24, x25, [x30, #192]
++	ldp		x26, x27, [x30, #208]
++	ldp		x28, x29, [x30, #224]
++	ldp		x0, x1, [x30, #0]
++	ldr		x30, [x30, #240]
++	eret
++
++	.text
++	.align 11
++	.globl EXT(linux64_el0_vectors)
++LEXT(linux64_el0_vectors)
++	.rept 8										// current EL (SP0, SPx): not expected while at EL0
++	b		Llinux64_el0_bad
++	.align 7
++	.endr
++	b		Llinux64_el0_entry						// lower EL, AArch64: sync
++	.align 7
++	b		Llinux64_el0_irq						// IRQ: the host's interrupt arrived while user code ran
++	.align 7
++	.rept 2										// FIQ, SError
++	b		Llinux64_el0_entry
++	.align 7
++	.endr
++	.rept 4										// lower EL, AArch32
++	b		.
++	.align 7
++	.endr
++
++Llinux64_el0_bad:								// note it for the monitor (linux64_dbg[14] = ESR) and stop here
++	adrp	x9, _linux64_dbg@PAGE
++	add		x9, x9, _linux64_dbg@PAGEOFF
++	mrs		x10, ESR_EL1
++	str		x10, [x9, #112]
++	b		.
++
++Llinux64_el0_irq:								// as an exception, with ESR = ~0 (LINUX64_EL0_ESR_IRQ: no ESR has bits 63:32 set)
++	sub		sp, sp, #LINUX64_EL0_FRAME
++	stp		x0, x1, [sp, #0]
++	mov		x1, #1
++	b		Llinux64_el0_common
++Llinux64_el0_entry:
++	sub		sp, sp, #LINUX64_EL0_FRAME
++	stp		x0, x1, [sp, #0]
++	mov		x1, #0
++Llinux64_el0_common:
++	stp		x2, x3, [sp, #16]
++	stp		x4, x5, [sp, #32]
++	stp		x6, x7, [sp, #48]
++	stp		x8, x9, [sp, #64]
++	stp		x10, x11, [sp, #80]
++	stp		x12, x13, [sp, #96]
++	stp		x14, x15, [sp, #112]
++	stp		x16, x17, [sp, #128]
++	stp		x18, x19, [sp, #144]
++	stp		x20, x21, [sp, #160]
++	stp		x22, x23, [sp, #176]
++	stp		x24, x25, [sp, #192]
++	stp		x26, x27, [sp, #208]
++	stp		x28, x29, [sp, #224]
++	str		x30, [sp, #240]
++	mrs		x0, SP_EL0
++	str		x0, [sp, #248]
++	mrs		x0, ELR_EL1
++	str		x0, [sp, #256]
++	mrs		x0, SPSR_EL1
++	str		x0, [sp, #264]
++	mrs		x0, ESR_EL1
++	cbz		x1, 1f
++	mov		x0, #-1
++1:
++	str		x0, [sp, #272]
++	mrs		x0, FAR_EL1
++	str		x0, [sp, #280]
++	add		x9, sp, #288						// the user's NEON/FP registers (linux64_el0_exception keeps them in uNeon)
++	stp		q0, q1, [x9, #0]
++	stp		q2, q3, [x9, #32]
++	stp		q4, q5, [x9, #64]
++	stp		q6, q7, [x9, #96]
++	stp		q8, q9, [x9, #128]
++	stp		q10, q11, [x9, #160]
++	stp		q12, q13, [x9, #192]
++	stp		q14, q15, [x9, #224]
++	stp		q16, q17, [x9, #256]
++	stp		q18, q19, [x9, #288]
++	stp		q20, q21, [x9, #320]
++	stp		q22, q23, [x9, #352]
++	stp		q24, q25, [x9, #384]
++	stp		q26, q27, [x9, #416]
++	stp		q28, q29, [x9, #448]
++	stp		q30, q31, [x9, #480]
++	mrs		x10, FPSR
++	str		w10, [x9, #512]
++	mrs		x10, FPCR
++	str		w10, [x9, #516]
++	add		x9, sp, #LINUX64_EL0_FRAME			// linux64_el0_run's block
++	ldr		x10, [x9, #0]
++	msr		TPIDRRO_EL0, x10					// XNU's thread pointer again
++	ldr		x10, [x9, #8]
++	msr		SP_EL0, x10
++	ldr		x10, [x9, #16]
++	msr		VBAR_EL1, x10
++	ldr		x18, [x9, #24]						// the host's x18 again (user code owns x18 at EL0)
++	ldr		x10, [x9, #32]						// SCTLR_EL1 as the kernels expect it (EnIA/EnDA back on)
++	msr		SCTLR_EL1, x10
++	isb
++	mov		x0, sp
++	mov		x29, xzr
++	bl		EXT(linux64_el0_exception)
++	b		.
+diff --git a/osfmk/arm64/exception_asm.h b/osfmk/arm64/exception_asm.h
+index 6d1b1e6..9626ae1 100644
+--- a/osfmk/arm64/exception_asm.h
++++ b/osfmk/arm64/exception_asm.h
+@@ -53,7 +53,7 @@
+ #define GUARDED_MODE_ESR     ESR_EL1
+ #define GUARDED_MODE_SPSR    SPSR_EL1
+ #define GUARDED_MODE_VBAR    VBAR_EL1
+-#define GUARDED_MODE_TPIDR   TPIDR_EL1
++#define GUARDED_MODE_TPIDR   TPIDRRO_EL0
+ 
+ /*
+  * LOAD_PMAP_CPU_DATA
+@@ -238,7 +238,7 @@ Lsave_neon_state_done_\@:
+ 
+ // SP0 is expected to already be selected
+ .macro SWITCH_TO_INT_STACK
+-	mrs		x1, TPIDR_EL1
++	mrs		x1, TPIDRRO_EL0
+ 	ldr		x1, [x1, ACT_CPUDATAP]
+ 	ldr		x1, [x1, CPU_ISTACKPTR]
+ 	mov		sp, x1			// Set the stack pointer to the interrupt stack
+diff --git a/osfmk/arm64/locore.s b/osfmk/arm64/locore.s
+index be1b12e..386f40c 100644
+--- a/osfmk/arm64/locore.s
++++ b/osfmk/arm64/locore.s
+@@ -113,7 +113,7 @@
+ 	 * Find the kernelcache table for the exception vectors by accessing
+ 	 * the per-CPU data.
+ 	 */
+-	mrs		x18, TPIDR_EL1
++	mrs		x18, TPIDRRO_EL0
+ 	ldr		x18, [x18, ACT_CPUDATAP]
+ 	ldr		x18, [x18, CPU_EXC_VECTORS]
+ 
+@@ -152,7 +152,7 @@
+ 	cmp		x1, x2								// If we have a data abort, we need to
+ 	b.ne	Lvalid_stack_\@						// ...validate the stack pointer
+ 	mrs		x0, SP_EL0					// Get SP_EL0
+-	mrs		x1, TPIDR_EL1						// Get thread pointer
++	mrs		x1, TPIDRRO_EL0						// Get thread pointer
+ Ltest_kstack_\@:
+ 	ldr		x2, [x1, TH_KSTACKPTR]				// Get top of kernel stack
+ 	sub		x3, x2, KERNEL_STACK_SIZE			// Find bottom of kernel stack
+@@ -385,7 +385,7 @@ el1_sp1_serror_vector_long:
+ #if __ARM_KERNEL_PROTECT__
+ 	mov		x18, #0 						// Zero x18 to avoid leaking data to user SS
+ #endif
+-	mrs		x0, TPIDR_EL1						// Load the thread register
++	mrs		x0, TPIDRRO_EL0						// Load the thread register
+ 	mrs		x1, SP_EL0							// Load the user stack pointer
+ 	add		x0, x0, ACT_CONTEXT					// Calculate where we store the user context pointer
+ 	ldr		x0, [x0]						// Load the user context pointer
+@@ -394,7 +394,7 @@ el1_sp1_serror_vector_long:
+ 	ldp		x0, x1, [sp], #16					// Restore x0 and x1 from the exception stack
+ 	msr		SPSel, #0							// Switch to SP0
+ 	stp		x0, x1, [sp, SS64_X0]				// Save x0, x1 to the user PCB
+-	mrs		x1, TPIDR_EL1						// Load the thread register
++	mrs		x1, TPIDRRO_EL0						// Load the thread register
+ 
+ 
+ 	mov		x0, sp								// Copy the user PCB pointer to x0
+@@ -441,7 +441,7 @@ el0_serror_vector_64_long:
+ 	.text
+ 	.align 2
+ check_exception_stack:
+-	mrs		x18, TPIDR_EL1					// Get thread pointer
++	mrs		x18, TPIDRRO_EL0					// Get thread pointer
+ 	cbz		x18, Lvalid_exception_stack			// Thread context may not be set early in boot
+ 	ldr		x18, [x18, ACT_CPUDATAP]
+ 	cbz		x18, .						// If thread context is set, cpu data should be too
+@@ -627,7 +627,7 @@ UNWIND_EPILOGUE
+  *  sp - Interrupt stack for the current CPU
+  */
+ .macro BEGIN_INTERRUPT_HANDLER
+-	mrs		x22, TPIDR_EL1
++	mrs		x22, TPIDRRO_EL0
+ 	ldr		x23, [x22, ACT_CPUDATAP]			// Get current cpu
+ 	/* Update IRQ count; CPU_STAT_IRQ.* is required to be accurate for the WFE idle sequence  */
+ 	ldr		w1, [x23, CPU_STAT_IRQ]
+@@ -648,7 +648,7 @@ UNWIND_EPILOGUE
+  * Cleans up after the prologue, and may do a bit more
+  * bookkeeping (kdebug related).
+  * Expects:
+- * x22 - Live TPIDR_EL1 value (thread address)
++ * x22 - Live TPIDRRO_EL0 value (thread address)
+  * x23 - Address of the current CPU data structure
+  * w24 - 0 if kdebug is disbled, nonzero otherwise
+  *  fp - Undefined live value (we may push a frame)
+@@ -805,7 +805,7 @@ exception_return_dispatch:
+ 	.global EXT(return_to_kernel)
+ LEXT(return_to_kernel)
+ 	tbnz	w0, #DAIF_IRQF_SHIFT, exception_return  // Skip AST check if IRQ disabled
+-	mrs		x3, TPIDR_EL1                           // Load thread pointer
++	mrs		x3, TPIDRRO_EL0                           // Load thread pointer
+ 	ldr		w1, [x3, ACT_PREEMPT_CNT]               // Load preemption count
+ 	msr		DAIFSet, #DAIFSC_ALL                    // Disable exceptions
+ 	cbnz	x1, exception_return_unint_tpidr_x3     // If preemption disabled, skip AST check
+@@ -822,6 +822,12 @@ LEXT(return_to_kernel)
+ 	.text
+ 	.globl EXT(thread_bootstrap_return)
+ LEXT(thread_bootstrap_return)
++	// LINUX64: hosted, the return to user space goes through C (linux64_el0_run)
++	adrp	x9, _linux64_hook@PAGE
++	ldr		x9, [x9, _linux64_hook@PAGEOFF]
++	cbz		x9, 1f
++	b		EXT(linux64_thread_bootstrap_return)
++1:
+ #if CONFIG_DTRACE
+ 	bl		EXT(dtrace_thread_bootstrap)
+ #endif
+@@ -835,7 +841,13 @@ LEXT(thread_bootstrap_return)
+ 	.text
+ 	.globl EXT(arm64_thread_exception_return)
+ LEXT(arm64_thread_exception_return)
+-	mrs		x0, TPIDR_EL1
++	// LINUX64: hosted, the return to user space goes through C (linux64_el0_run)
++	adrp	x9, _linux64_hook@PAGE
++	ldr		x9, [x9, _linux64_hook@PAGEOFF]
++	cbz		x9, 1f
++	b		EXT(linux64_thread_bootstrap_return)
++1:
++	mrs		x0, TPIDRRO_EL0
+ 	add		x21, x0, ACT_CONTEXT
+ 	ldr		x21, [x21]
+ 	mov		x28, xzr
+@@ -855,7 +867,7 @@ check_user_asts:
+ 	bl		EXT(__asan_handle_no_return)
+ 	POP_FRAME
+ #endif /* KASAN_TBI */
+-	mrs		x3, TPIDR_EL1					// Load thread pointer
++	mrs		x3, TPIDRRO_EL0					// Load thread pointer
+ 
+ 	movn		w2, #0
+ 	str		w2, [x3, TH_IOTIER_OVERRIDE]			// Reset IO tier override to -1 before returning to user
+@@ -943,7 +955,7 @@ no_asts:
+ 	PUSH_FRAME
+ 	bl		EXT(arm_debug_set)					// Establish thread debug state in live regs
+ 	POP_FRAME
+-	mrs		x3, TPIDR_EL1						// Reload thread pointer
++	mrs		x3, TPIDRRO_EL0						// Reload thread pointer
+ 	ldr		x4, [x3, ACT_CPUDATAP]				// Reload CPU data pointer
+ L_skip_user_set_debug_state:
+ 	ldrsh	x0, [x4, CPU_NUMBER_GS]
+@@ -955,7 +967,7 @@ L_skip_user_set_debug_state:
+ exception_return:
+ 	msr		DAIFSet, #DAIFSC_ALL				// Disable exceptions
+ exception_return_unint:
+-	mrs		x3, TPIDR_EL1					// Load thread pointer
++	mrs		x3, TPIDRRO_EL0					// Load thread pointer
+ exception_return_unint_tpidr_x3:
+ 	mov		sp, x21						// Reload the pcb pointer
+ 
+@@ -1103,7 +1115,7 @@ user_take_ast:
+ 	.text
+ 	.align 2
+ preempt_underflow:
+-	mrs		x0, TPIDR_EL1
++	mrs		x0, TPIDRRO_EL0
+ 	str		x0, [sp, #-16]!						// We'll print thread pointer
+ 	adr		x0, L_underflow_str					// Format string
+ 	CALL_EXTERN panic							// Game over
+@@ -1116,7 +1128,7 @@ L_underflow_str:
+ 	.text
+ 	.align 2
+ preempt_count_notzero:
+-	mrs		x0, TPIDR_EL1
++	mrs		x0, TPIDRRO_EL0
+ 	str		x0, [sp, #-16]!						// We'll print thread pointer
+ 	ldr		w0, [x0, ACT_PREEMPT_CNT]
+ 	str		w0, [sp, #8]
+@@ -1363,7 +1375,7 @@ ppl_exit:
+ 	add		x15, x15, x10, lsl #32
+ 
+ 	/* Load the preemption count. */
+-	mrs		x10, TPIDR_EL1
++	mrs		x10, TPIDRRO_EL0
+ 	ldr		w12, [x10, ACT_PREEMPT_CNT]
+ 
+ 	/* Detect underflow */
+@@ -1399,7 +1411,7 @@ Lno_preempt_underflow:
+ 	mov		w12, #0
+ 
+ 	/* Restore the thread pointer into x10. */
+-	mrs		x10, TPIDR_EL1
++	mrs		x10, TPIDRRO_EL0
+ 
+ Lskip_collect_measurement:
+ #endif /* SCHED_HYGIENE_DEBUG */
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+index a1f2a91..884e65c 100644
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -27,6 +27,7 @@
+  */
+ 
+ #include <arm64/machine_machdep.h>
++#include <linux64/linux64.h>
+ #include <arm64/proc_reg.h>
+ #include <arm/machine_cpu.h>
+ #include <arm/cpu_internal.h>
+@@ -342,6 +343,7 @@ wfe_process_recommendation(void)
+ void
+ machine_idle(void)
+ {
++	linux64_count(LINUX64_CTR_MACHINE_IDLE);	/* LINUX64: for the host's monitor */
+ 	/* Interrupts are expected to be masked on entry or re-entry via
+ 	 * Idle_load_context()
+ 	 */
+@@ -357,6 +359,11 @@ machine_idle(void)
+ 		 */
+ 		Idle_context();
+ 	}
++	/* LINUX64 (xnulinux): hosted, hardware IRQs stay masked; only the virtual flag changes. */
++	if (linux64_hook) {
++		LINUX64_VINT = 1;
++		return;
++	}
+ 	__builtin_arm_wsr("DAIFClr", (DAIFSC_IRQF | DAIFSC_FIQF));
+ }
+ 
+@@ -398,6 +405,10 @@ ml_get_interrupts_enabled(void)
+ {
+ 	uint64_t        value;
+ 
++	/* LINUX64: interrupts are virtual while hosted (see ml_set_interrupts_enabled_with_debug). */
++	if (linux64_hook) {
++		return LINUX64_VINT ? TRUE : FALSE;
++	}
+ 	MRS(value, "DAIF");
+ 	if (value & DAIF_IRQF) {
+ 		return FALSE;
+@@ -753,6 +764,13 @@ halt_all_cpus(boolean_t reboot)
+ 		printf("CPU halted\n");
+ 		PEHaltRestart(kPEHaltCPU);
+ 	}
++	if (linux64_hook) {
++		/*
++		 * LINUX64 (xnulinux): hosted, spinning here keeps this Linux CPU with its interrupts masked for good (Linux
++		 * soft-locks). The host ends the run instead and says whether the system asked for a restart.
++		 */
++		linux64_call2(LINUX64_CALL_HALT, reboot ? 1 : 0, 0);
++	}
+ 	while (1) {
+ 		;
+ 	}
+@@ -1144,7 +1162,9 @@ ml_parse_cpu_topology(void)
+ 
+ 	__builtin_arm_wsr64("TPIDR_EL0", cpuid & MACHDEP_TPIDR_CPUNUM_MASK);
+ 	assert((cpuid & MACHDEP_TPIDR_CPUNUM_MASK) == cpuid);
+-	__builtin_arm_wsr64("TPIDRRO_EL0", 0);
++	if (!linux64_hook) {	/* LINUX64: hosted, TPIDRRO_EL0 already holds the kernel's thread pointer */
++		__builtin_arm_wsr64("TPIDRRO_EL0", 0);
++	}
+ }
+ 
+ const ml_topology_info_t *
+@@ -2048,6 +2068,10 @@ ml_set_decrementer(uint32_t dec_value)
+ 	assert(ml_get_interrupts_enabled() == FALSE);
+ 	cdp->cpu_decrementer = dec_value;
+ 
++	/* LINUX64 (xnulinux): the generic timer is Linux's; cpu_idle hands the deadline to the host. */
++	if (linux64_hook) {
++		return;
++	}
+ 	if (cdp->cpu_set_decrementer_func) {
+ 		cdp->cpu_set_decrementer_func(dec_value);
+ 	} else {
+@@ -2280,6 +2304,12 @@ _enable_virtual_timer(void)
+ void
+ fiq_context_init(boolean_t enable_fiq __unused)
+ {
++	{
++		/* LINUX64 (xnulinux): the generic timers are Linux's, their control registers included. */
++		if (linux64_hook) {
++			return;
++		}
++	}
+ 	/* Interrupts still disabled. */
+ 	assert(ml_get_interrupts_enabled() == FALSE);
+ 	_enable_virtual_timer();
+diff --git a/osfmk/arm64/machine_routines_asm.s b/osfmk/arm64/machine_routines_asm.s
+index 2449334..f05d461 100644
+--- a/osfmk/arm64/machine_routines_asm.s
++++ b/osfmk/arm64/machine_routines_asm.s
+@@ -82,7 +82,7 @@ Lcre_start_\@:
+ 
+ 
+ .macro LOAD_CPU_JOP_KEY	dst, tmp
+-	mrs		\tmp, TPIDR_EL1
++	mrs		\tmp, TPIDRRO_EL0
+ 	ldr		\tmp, [\tmp, ACT_CPUDATAP]
+ 	ldr		\dst, [\tmp, CPU_JOP_KEY]
+ .endmacro
+@@ -1016,6 +1016,11 @@ LEXT(arm64_force_wfi_clock_gate)
+ LEXT(arm64_replace_bootstack)
+ 	ARM64_STACK_PROLOG
+ 	PUSH_FRAME
++	// LINUX64 (xnulinux): hosted, SP_EL1 is Linux's kernel stack and SP_EL0 is Linux's `current`;
++	// XNU must not touch either. Its exception stacks are unused while hosted.
++	adrp	x9, _linux64_hook@PAGE
++	ldr		x9, [x9, _linux64_hook@PAGEOFF]
++	cbnz	x9, Lreplace_bootstack_hosted
+ 	// Set the exception stack pointer
+ 	ldr		x0, [x0, CPU_EXCEPSTACK_TOP]
+ 	mrs		x4, DAIF					// Load current DAIF; use x4 as pinst may trash x1-x3
+@@ -1031,6 +1036,7 @@ LEXT(arm64_replace_bootstack)
+ 	mov		sp, x0
+ 	msr		SPSel, #0
+ 	msr		DAIF, x4					// Restore interrupt state
++Lreplace_bootstack_hosted:
+ 	POP_FRAME
+ 	ARM64_STACK_EPILOG
+ 
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 55e609a..6f68419 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -72,6 +72,8 @@
+ #include <kern/telemetry.h>
+ #endif
+ 
++#include <linux64/linux64.h>
++#include <kern/recount.h>
+ #include <prng/entropy.h>
+ 
+ 
+@@ -2186,3 +2188,281 @@ sleh_invalid_stack(arm_context_t *context, uint32_t esr __unused, vm_offset_t fa
+ 	panic_with_thread_kernel_state("Invalid kernel stack pointer (probable corruption).", &context->ss);
+ }
+ 
++
++/*
++ * LINUX64 (xnulinux): a data or instruction abort on an XNU kernel address, taken in Linux's vectors and forwarded by
++ * the host (xnu.ko through FKI). Does what handle_kernel_abort does for a kernel-map fault: the pmap fast path for
++ * permission/access-flag faults, then vm_fault. Returns KERN_SUCCESS when the access can be retried.
++ */
++kern_return_t linux64_kernel_fault(uint64_t far, uint64_t esr);
++kern_return_t
++linux64_kernel_fault(uint64_t far, uint64_t esr)
++{
++	uint32_t ec = (uint32_t)((esr >> 26) & 0x3f);
++	fault_status_t fault_code = (fault_status_t)(esr & 0x3f);
++	vm_prot_t fault_type = VM_PROT_READ;
++	kern_return_t result = KERN_FAILURE;
++
++	if (ec == 0x21) {               /* instruction abort, current EL */
++		fault_type = VM_PROT_READ | VM_PROT_EXECUTE;
++	} else if (ec == 0x25) {        /* data abort, current EL */
++		if (esr & (1u << 6)) {  /* WnR */
++			fault_type = VM_PROT_READ | VM_PROT_WRITE;
++		}
++	} else {
++		return KERN_FAILURE;
++	}
++	if (!is_vm_fault(fault_code)) {
++		return KERN_FAILURE;
++	}
++	/* a kernel address faults on the kernel map; a user one (copyio) on the current thread's map */
++	vm_map_t map = kernel_map;
++	if (!VM_KERNEL_ADDRESS(far)) {
++		thread_t thread = current_thread();
++		if (thread == THREAD_NULL || thread->map == VM_MAP_NULL || thread->map == kernel_map) {
++			return KERN_FAILURE;
++		}
++		map = thread->map;
++	}
++	kern_return_t ffr = KERN_FAILURE;
++	if (!is_translation_fault(fault_code)) {
++		ffr = arm_fast_fault(map->pmap, far, fault_type, (fault_code == FSC_ACCESS_FLAG_FAULT_L3), FALSE);
++	}
++	kern_return_t kr = ffr == KERN_SUCCESS ? KERN_SUCCESS :
++	    vm_fault(map, far, fault_type, FALSE, VM_KERN_MEMORY_NONE, THREAD_UNINT, NULL, 0);
++	if (ffr == KERN_SUCCESS) {
++		return KERN_SUCCESS;
++	}
++	return kr;
++}
++
++/*
++ * LINUX64 (xnulinux): a kernel fault vm_fault could not resolve, taken inside a copyin/copyout routine: the pc its
++ * copyio recovery entry returns through (the routine then returns an error; x0 = EFAULT), 0 when pc has none.
++ */
++uint64_t linux64_kernel_fault_recover(uint64_t pc, uint64_t far, uint64_t esr);
++uint64_t
++linux64_kernel_fault_recover(uint64_t pc, uint64_t far, uint64_t esr)
++{
++	struct copyio_recovery_entry *e = NULL;
++	ptrdiff_t offset = copyio_recovery_offset(pc);
++	for (struct copyio_recovery_entry *c = copyio_recover_table; c < copyio_recover_table_end; c++) {
++		if (offset >= c->cre_start && offset < c->cre_end) {
++			e = c;
++			break;
++		}
++	}
++	thread_t thread = current_thread();
++
++	if (e == NULL) {
++		return 0;
++	}
++	if (thread != THREAD_NULL) {
++		thread->machine.recover_esr = esr;
++		thread->machine.recover_far = far;
++	}
++	return (uint64_t)copyio_recover_table + (uint64_t)e->cre_recovery;
++}
++
++/*
++ * LINUX64 (xnulinux): the first return of a new user thread (thread_bootstrap_return) while hosted. The pending ASTs
++ * run as on the way to user space (for the first BSD thread: bsdinit_task, which execs launchd), and the thread enters
++ * user space through linux64_el0_run (the host is told where user space starts the first time).
++ */
++void linux64_thread_bootstrap_return(void) __attribute__((noreturn));
++/* boot-arg linux64_trace=1 logs every EL0 exception, and system calls with their paths and results */
++static int linux64_trace_level = -1;
++static inline int
++linux64_tracing(void)
++{
++	if (__improbable(linux64_trace_level < 0)) {
++		int v = 0;
++		if (!PE_parse_boot_argn("linux64_trace", &v, sizeof(v))) {
++			v = 0;
++		}
++		linux64_trace_level = v;
++	}
++	return linux64_trace_level;
++}
++
++static thread_t linux64_svc_thread;	/* linux64_trace: the thread whose system call is in flight, and its number */
++static long long linux64_svc_num;
++
++/* LINUX64: user-space exceptions by class for the host (linux64_abi.h, LINUX64_EL0_CLASSES) */
++uint64_t linux64_el0_stat[LINUX64_EL0_CPUS][2][LINUX64_EL0_CLASSES];
++static uint64_t linux64_el0_t0[LINUX64_EL0_CPUS];
++static uint8_t linux64_el0_cls[LINUX64_EL0_CPUS];
++
++void
++linux64_thread_bootstrap_return(void)
++{
++	thread_t thread = current_thread();
++
++	static int reported;
++
++	(void)ml_set_interrupts_enabled(FALSE);
++	ast_taken_user();
++	if (linux64_svc_thread == thread && linux64_tracing()) {	/* what the system call returned (C set: x0 is errno) */
++		linux64_svc_thread = NULL;
++		extern int proc_selfpid(void);
++		kprintf("linux64: [%d] svc %lld -> x0 0x%llx x1 0x%llx%s\n", proc_selfpid(), linux64_svc_num, get_saved_state_reg(thread->machine.upcb, 0),
++		    get_saved_state_reg(thread->machine.upcb, 1), (get_saved_state_cpsr(thread->machine.upcb) & PSR64_C) ? " (error)" : "");
++	}
++	if (reported++ == 0) {
++		linux64_call2(LINUX64_CALL_USER_ENTER, get_saved_state_pc(thread->machine.upcb), 0);
++	}
++	/*
++	 * An arm64 (not arm64e) process runs the arm64e system libraries with JOP off: Apple hardware disables the user
++	 * IA/DA keys for it; hosted, user code runs with SCTLR_EL1.EnIA/EnDA cleared (linux64_el0_run puts them back on
++	 * the next exception), or a blraaz on one of its unsigned function pointers fails (EXC_ARM_PAC_FAIL).
++	 */
++#if PRECISE_USER_KERNEL_TIME
++	recount_enter_user();		/* user time vs system time, as locore's return to user space does */
++#endif
++	{	/* the host's per-class accounting (linux64_abi.h): the exception this CPU took last is now done */
++		unsigned int slot = (unsigned int)cpu_number() & (LINUX64_EL0_CPUS - 1);
++		if (linux64_el0_t0[slot] != 0) {
++			linux64_el0_stat[slot][1][linux64_el0_cls[slot]] += __builtin_arm_rsr64("CNTVCT_EL0") - linux64_el0_t0[slot];
++			linux64_el0_t0[slot] = 0;
++		}
++	}
++	linux64_el0_run(thread->machine.upcb, (thread->machine.arm_machine_flags & ARM_MACHINE_THREAD_DISABLE_USER_JOP) != 0);
++}
++
++/* LINUX64: the registers linux64_el0_vectors saved for an exception taken at EL0 (cswitch.s) */
++struct linux64_el0_frame {
++	uint64_t x[31];
++	uint64_t sp, pc, cpsr, esr, far;
++	uint64_t neon[64];			/* q0..q31 */
++	uint32_t fpsr, fpcr;
++	uint64_t pad;
++};
++_Static_assert(__builtin_offsetof(struct linux64_el0_frame, neon) == 288, "linux64_el0_frame layout");
++_Static_assert(sizeof(struct linux64_el0_frame) == 36 * 8 + 528, "linux64_el0_frame size");
++
++void linux64_el0_exception(struct linux64_el0_frame *f) __attribute__((noreturn));
++void
++linux64_el0_exception(struct linux64_el0_frame *f)
++{
++	thread_t thread = current_thread();
++	arm_saved_state_t *ss = thread->machine.upcb;
++
++#if PRECISE_USER_KERNEL_TIME
++	recount_leave_user();		/* interrupts are still off here, as on locore's exception entry */
++#endif
++	linux64_count(LINUX64_CTR_EL0_EXC);	/* for the host's monitor: EL0 exceptions, the last one's ESR, FAR, PC */
++	{
++		unsigned int slot = (unsigned int)cpu_number() & (LINUX64_EL0_CPUS - 1), ec = (unsigned int)ESR_EC(f->esr);
++		unsigned int cls = f->esr == ~0ULL ? 3 : ec == ESR_EC_SVC_64 ? 0 : ec == ESR_EC_DABORT_EL0 ? 1 : ec == ESR_EC_IABORT_EL0 ? 2 : 4;
++		linux64_el0_stat[slot][0][cls]++;
++		linux64_el0_cls[slot] = (uint8_t)cls;
++		linux64_el0_t0[slot] = __builtin_arm_rsr64("CNTVCT_EL0");
++	}
++	linux64_dbg[LINUX64_CTR_EL0_ESR] = f->esr;
++	linux64_dbg[LINUX64_CTR_EL0_FAR] = f->far;
++	linux64_dbg[LINUX64_CTR_EL0_PC] = f->pc;
++	if (linux64_tracing()) kprintf("linux64: EL0 exception esr 0x%llx far 0x%llx pc 0x%llx x16 %lld ttbr0 0x%llx ttep 0x%llx\n", f->esr, f->far, f->pc, f->x[16],
++	    __builtin_arm_rsr64("TTBR0_EL1"), (uint64_t)thread->map->pmap->ttep);
++	/*
++	 * The whole user state at once, signed once as locore's exception entry does (HAS_APPLE_PAC): the per-field setters
++	 * each check the old signature and sign again, five times per exception. EL0 runs with IRQ/FIQ masked while hosted
++	 * (no XNU interrupts at EL0 yet); XNU must see the user's own PSTATE, or its abort path takes the user fault for
++	 * one from a non-interruptible context.
++	 */
++	{
++		arm_saved_state64_t *s64 = saved_state64(ss);
++		uint32_t cpsr = (uint32_t)f->cpsr & ~(uint32_t)0x3c0;
++		for (unsigned i = 0; i < 29; i++) {
++			if (i != 16 && i != 17) {
++				s64->x[i] = f->x[i];
++			}
++		}
++		s64->fp = f->x[29];
++		s64->sp = f->sp;
++#if HAS_APPLE_PAC
++		uint64_t intr = ml_pac_safe_interrupts_disable();
++		asm volatile (
++			"mov	x9, lr"				"\n"
++			"mov	x0, %[ss]"			"\n"
++			"mrs	x10, SPSel"			"\n"
++			"msr	SPSel, #1"			"\n"
++			"mov	x1, %[pc]"			"\n"
++			"mov	w2, %w[cpsr]"			"\n"
++			"mov	x3, %[lr]"			"\n"
++			"mov	x4, %[x16]"			"\n"
++			"mov	x5, %[x17]"			"\n"
++			"str	x1, [x0, %[SS64_PC]]"		"\n"
++			"str	w2, [x0, %[SS64_CPSR]]"		"\n"
++			"str	x3, [x0, %[SS64_LR]]"		"\n"
++			"stp	x4, x5, [x0, %[SS64_X16]]"	"\n"
++			"bl	_ml_sign_thread_state"		"\n"
++			"msr	SPSel, x10"			"\n"
++			"mov	lr, x9"				"\n"
++			:
++			: [ss] "r"(ss), [pc] "r"(f->pc), [cpsr] "r"(cpsr), [lr] "r"(f->x[30]), [x16] "r"(f->x[16]), [x17] "r"(f->x[17]),
++			  [SS64_X16] "i"(ss64_offsetof(x[16])), [SS64_PC] "i"(ss64_offsetof(pc)),
++			  [SS64_CPSR] "i"(ss64_offsetof(cpsr)), [SS64_LR] "i"(ss64_offsetof(lr))
++			: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x16", "x17", "memory"
++		);
++		ml_pac_safe_interrupts_restore(intr);
++#else
++		s64->x[16] = f->x[16];
++		s64->x[17] = f->x[17];
++		s64->lr = f->x[30];
++		s64->pc = f->pc;
++		s64->cpsr = cpsr;
++#endif
++	}
++	{
++		arm_neon_saved_state_t *ns = thread->machine.uNeon;
++		memcpy(&ns->ns_64.v.q[0], f->neon, sizeof(f->neon));
++		ns->ns_64.fpsr = f->fpsr;
++		ns->ns_64.fpcr = f->fpcr;
++	}
++	if (f->esr == ~0ULL) {
++		/*
++		 * A host IRQ arrived while user code ran (EL0 runs with IRQs unmasked). Let Linux take it and run what it
++		 * must (its tick, RCU, other tasks), then deliver XNU's timer "interrupt" if it is due, as sleh_irq
++		 * would: the quantum expiry it may raise preempts this thread on the way back to user space.
++		 */
++		cpu_data_t *cdp = getCpuDatap();
++		(void)ml_set_interrupts_enabled(FALSE);	/* XNU's (virtual) interrupt state: off, as in sleh_irq */
++		linux64_call2(LINUX64_CALL_PREEMPTED, 0, 0);
++		if (cdp->rtcPop != EndOfAllTime && cdp->rtcPop != 0 && mach_absolute_time() >= cdp->rtcPop) {
++			cdp->cpu_int_state = ss;
++			cdp->cpu_stat.irq_ex_cnt++;
++			cdp->cpu_decrementer = -1;
++			rtclock_intr(TRUE);
++			cdp->cpu_int_state = NULL;
++		}
++		if (os_atomic_load(&linux64_ipi_pending[linux64_cpu_slot()], relaxed)) {	/* another CPU's IPI, as sleh_fiq takes it */
++			cdp->cpu_int_state = ss;
++			linux64_ipi_take();
++			cdp->cpu_int_state = NULL;
++		}
++		thread_exception_return();
++	}
++	if (ESR_EC(f->esr) == ESR_EC_SVC_64 && linux64_tracing()) {
++		long long num = (long long)f->x[16];
++		linux64_svc_thread = thread;
++		linux64_svc_num = num;
++		if (num == 202 && f->x[1] > 0 && f->x[1] <= 8) {	/* sysctl: the MIB and this thread's kernel stack */
++			int mib[8] = {0};
++			if (copyin((user_addr_t)f->x[0], mib, f->x[1] * sizeof(int)) == 0) {
++				kprintf("linux64: svc 202 mib %d.%d.%d.%d (len %llu) kstack 0x%llx\n", mib[0], mib[1], mib[2], mib[3], f->x[1],
++				    (uint64_t)thread->kernel_stack);
++			}
++		}
++		if (num == 59 || num == 244 || num == 5 || num == 398 || num == 463 || num == 33 || num == 338 || num == 340 || num == 466 || num == 469) {
++			char path[128];
++			size_t len = 0;
++			uint64_t ua = (num == 463 || num == 466 || num == 469 || num == 244) ? f->x[1] : f->x[0];
++			if (copyinstr((user_addr_t)ua, path, sizeof(path), &len) == 0) {
++				extern int proc_selfpid(void);
++				kprintf("linux64: [%d] svc %lld path \"%s\"\n", proc_selfpid(), num, path);
++			}
++		}
++	}
++	sleh_synchronous(thread->machine.contextData, (uint32_t)f->esr, (vm_offset_t)f->far);
++	thread_exception_return();
++}
+diff --git a/osfmk/arm64/status.c b/osfmk/arm64/status.c
+index b595c56..01b6478 100644
+--- a/osfmk/arm64/status.c
++++ b/osfmk/arm64/status.c
+@@ -1621,13 +1621,14 @@ machine_thread_state_initialize(thread_t thread)
+                         "mov	x4, #0"                 "\n"
+                         "mov	x5, #0"                 "\n"
+                         "mov	x6, lr"                 "\n"
++                        "mrs	x10, SPSel"             "\n"
+                         "msr	SPSel, #1"              "\n"
+                         "bl     _ml_sign_thread_state"  "\n"
+-                        "msr	SPSel, #0"              "\n"
++                        "msr	SPSel, x10"             "\n"
+                         "mov	lr, x6"                 "\n"
+                         :
+                         : [iss] "r"(thread->machine.upcb), [usr] "r"(thread->machine.upcb->ss_64.cpsr)
+-                        : "x0", "x1", "x2", "x3", "x4", "x5", "x6"
++                        : "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x10"
+                 );
+ 		ml_pac_safe_interrupts_restore(intr);
+ 	}
+diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
+index c86b9e7..b1c831f 100644
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -27,6 +27,7 @@
+  */
+ 
+ #ifdef __x86_64__
++#include <linux64/linux64.h>
+ #include <i386/mp.h>
+ #include <i386/cpu_data.h>
+ #include <i386/bit_routines.h>
+@@ -531,6 +532,12 @@ console_write(char *str, int size)
+ {
+ 	assert(str != NULL);
+ 
++	/* LINUX64: hosted XNU's console (/dev/console, km) goes to the host. */
++	if (linux64_hook && size > 0) {
++		linux64_call2(LINUX64_CALL_CONSOLE_WRITE, (unsigned long)str, (unsigned long)size);
++		return;
++	}
++
+ 	char *write_ptr = NULL;
+ 	int chunk_size = CPU_CONS_BUF_SIZE;
+ 	int i = 0;
+diff --git a/osfmk/console/serial_general.c b/osfmk/console/serial_general.c
+index b1ca47a..d878442 100644
+--- a/osfmk/console/serial_general.c
++++ b/osfmk/console/serial_general.c
+@@ -33,6 +33,7 @@
+  */
+ 
+ #include <kern/spl.h>
++#include <linux64/linux64.h>
+ #include <mach/std_types.h>
+ #include <types.h>
+ #include <kern/thread.h>
+@@ -48,13 +49,32 @@ SECURITY_READ_ONLY_LATE(unsigned int) serialmode;
+  *  characters that have been typed.
+  */
+ 
++/*
++ * LINUX64 (xnulinux): a hosted XNU's console input comes from the host (LINUX64_CALL_CONSOLE_READ), polled by the serial keyboard thread like a UART.
++ */
++static int
++linux64_cons_getc(void)
++{
++	static char buf[64];
++	static int n, i;
++
++	if (i < n) {
++		return (unsigned char)buf[i++];
++	}
++	struct linux64_buf_req q = { .buf = buf, .len = sizeof(buf), .result = 0 };
++	linux64_call(LINUX64_CALL_CONSOLE_READ, &q);
++	n = q.result > 0 ? (int)q.result : 0;
++	i = 0;
++	return n ? (unsigned char)buf[i++] : -1;
++}
++
+ void
+ serial_keyboard_init(void)
+ {
+ 	kern_return_t   result;
+ 	thread_t                thread;
+ 
+-	if (!(serialmode & SERIALMODE_INPUT)) { /* Leave if we do not want a serial console */
++	if (!(serialmode & SERIALMODE_INPUT) && !linux64_hook) { /* Leave if we do not want a serial console */
+ 		return;
+ 	}
+ 
+@@ -82,7 +102,7 @@ serial_keyboard_poll(void)
+ 	uint64_t next;
+ 
+ 	while (1) {
+-		chr = _serial_getc(false); /* Get a character if there is one */
++		chr = linux64_hook ? linux64_cons_getc() : _serial_getc(false); /* Get a character if there is one */
+ 		if (chr < 0) { /* The serial buffer is empty */
+ 			break;
+ 		}
+diff --git a/osfmk/kern/assert.h b/osfmk/kern/assert.h
+index 346da3c..8c5b3b6 100644
+--- a/osfmk/kern/assert.h
++++ b/osfmk/kern/assert.h
+@@ -93,8 +93,23 @@ __END_DECLS
+ 
+ #if     MACH_ASSERT
+ 
++#if defined(XNU_KERNEL_PRIVATE) && defined(__arm64__)
++/* LINUX64: hosted there is no XNU exception vector for the assert trap: report a failed assert() to the host. */
++#ifdef __cplusplus
++extern "C" {
++#endif
++extern unsigned long linux64_hook;
++extern void linux64_assert_report(const char *file, int line, const char *expr);
++#ifdef __cplusplus
++}
++#endif
++#define assert(ex)  \
++	(__builtin_expect(!!((ex)), 1L) ? (void)0 : linux64_hook ? linux64_assert_report(__FILE_NAME__, __LINE__, # ex) \
++	: Assert(__FILE_NAME__, __LINE__, # ex))
++#else
+ #define assert(ex)  \
+ 	(__builtin_expect(!!((ex)), 1L) ? (void)0 : Assert(__FILE_NAME__, __LINE__, # ex))
++#endif
+ #define assertf(ex, fmt, args...) \
+ 	(__builtin_expect(!!((ex)), 1L) ? (void)0 : __Panic("%s:%d Assertion failed: %s : " fmt, __FILE_NAME__, __LINE__, # ex, ##args))
+ 
+diff --git a/osfmk/kern/backtrace.c b/osfmk/kern/backtrace.c
+index fc5d894..8c35910 100644
+--- a/osfmk/kern/backtrace.c
++++ b/osfmk/kern/backtrace.c
+@@ -44,7 +44,7 @@
+ #include <ptrauth.h>
+ #endif // defined(HAS_APPLE_PAC)
+ 
+-#if __x86_64__
++#if __x86_64__ || __arm64__	/* LINUX64: hosted, a kernel stack also has frames in Linux's text */
+ static void
+ _backtrace_packed_out_of_reach(void)
+ {
+@@ -72,7 +72,7 @@ _backtrace_pack_addr(backtrace_pack_t packing, uint8_t *dst, size_t dst_size,
+ 	case BTP_KERN_OFFSET_32:;
+ 		uintptr_t addr_delta = addr - vm_kernel_stext;
+ 		int32_t addr_packed = (int32_t)addr_delta;
+-#if __x86_64__
++#if __x86_64__ || __arm64__
+ 		if ((uintptr_t)(int32_t)addr_delta != addr_delta) {
+ 			addr = (vm_offset_t)&_backtrace_packed_out_of_reach;
+ 			addr_delta = addr - vm_kernel_stext;
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+index adc8e49..fa263c8 100644
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -55,6 +55,7 @@
+  */
+ 
+ #include <mach_assert.h>
++#include <linux64/linux64.h>
+ #include <mach_kdp.h>
+ #include <kdp/kdp.h>
+ #include <kdp/kdp_core.h>
+@@ -679,7 +680,20 @@ DebuggerTrapWithState(debugger_op db_op, const char *db_message, const char *db_
+ 	 * The rest of the cores are halted by IPI if possible; if that
+ 	 * fails it will fall back to dbgwrap.
+ 	 */
++	{
++		/*
++		 * LINUX64 (xnulinux): the hosted kernel's exceptions are taken by Linux, which does not hand XNU this trap
++		 * (an uncategorized exception), so a stackshot (spindump, tailspin, sysdiagnose) ended the whole run. The
++		 * stackshot needs no trap frame (handle_debugger_trap takes it with do_stackshot(NULL)) and there is one CPU:
++		 * call the handler here, as the trap would (kdp_trap -> handle_debugger_trap).
++		 */
++		if (linux64_hook && db_op == DBOP_STACKSHOT) {
++			handle_debugger_trap(0, 0, 0, NULL);	/* the exception number only matters for breakpoints */
++			goto trapped;
++		}
++	}
+ 	TRAP_DEBUGGER;
++trapped:
+ 
+ 	ret = CPUDEBUGGERRET;
+ 
+@@ -1072,6 +1086,27 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
+ {
+ #pragma clang diagnostic pop
+ 
++#if defined(__arm64__)
++	{
++		/* LINUX64 (xnulinux): report the panic to the host (see arm_init.c). */
++		if (linux64_hook) {
++			/* the formatted message when there are arguments (the format string alone otherwise) */
++			static char linux64_panic_buf[512];
++			const char *msg = panic_format_str;
++			if (panic_args != NULL && panic_format_str != NULL) {
++				extern int vsnprintf(char *, size_t, const char *, va_list);
++				va_list ap;
++				va_copy(ap, *panic_args);
++				vsnprintf(linux64_panic_buf, sizeof(linux64_panic_buf), panic_format_str, ap);
++				va_end(ap);
++				msg = linux64_panic_buf;
++			}
++			linux64_call2(LINUX64_CALL_PANIC, (unsigned long)msg, panic_caller);
++		}
++	}
++#endif
++
++
+ #if defined(SWEET)
+ 	/* No CPU/thread/debugger state is required for this first panic copy. */
+ 	sweet_early_panic(panic_format_str, panic_args);
+diff --git a/osfmk/kern/kext_alloc.c b/osfmk/kern/kext_alloc.c
+index 8654767..b539e25 100644
+--- a/osfmk/kern/kext_alloc.c
++++ b/osfmk/kern/kext_alloc.c
+@@ -26,6 +26,7 @@
+  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
+  */
+ #include <kern/assert.h>
++#include <linux64/linux64.h>
+ #include <kern/debug.h>
+ #include <kern/kext_alloc.h>
+ #include <kern/misc_protos.h>
+@@ -217,6 +218,18 @@ check_reachable:
+ 	}
+ #endif
+ 
++	{
++		/*
++		 * LINUX64 (xnulinux): hosted XNU has no page-fault path of its own yet (Linux takes the abort), so kext
++		 * memory is wired up front instead of faulted in on first touch.
++		 */
++		if (linux64_hook) {
++			kern_return_t wr = vm_map_wire_kernel(g_kext_map, addr, addr + size, VM_PROT_DEFAULT, VM_KERN_MEMORY_KEXT, FALSE);
++			if (wr != KERN_SUCCESS) {
++				printf("linux64: kext_alloc wire failed %d\n", wr);
++			}
++		}
++	}
+ 	/* Check that the memory is reachable by kernel text */
+ 	if ((addr + size) > kext_alloc_max) {
+ 		kext_free((vm_offset_t)addr, size);
+diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
+index dd6f204..1254da8 100644
+--- a/osfmk/kern/printf.c
++++ b/osfmk/kern/printf.c
+@@ -155,6 +155,7 @@
+  */
+ 
+ #include <debug.h>
++#include <linux64/linux64.h>
+ #include <mach_kdp.h>
+ #include <mach/boolean.h>
+ #include <kern/cpu_number.h>
+@@ -868,6 +869,20 @@ __printflike(1, 0)
+ static int
+ vprintf_internal(const char *fmt, va_list ap_in, void *caller)
+ {
++	{
++		/* LINUX64 (xnulinux): hosted XNU prints through the host (dmesg), like kprintf. */
++		if (linux64_hook && fmt) {
++			extern int vsnprintf(char *, size_t, const char *, va_list);
++			char buf[256];
++			va_list ap;
++			va_copy(ap, ap_in);
++			vsnprintf(buf, sizeof(buf), fmt, ap);
++			va_end(ap);
++			linux64_call(LINUX64_CALL_KPRINTF, buf);
++			(void)caller;
++			return 0;
++		}
++	}
+ 	if (fmt) {
+ 		struct console_printbuf_state info_data;
+ 
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+index 8e29586..fede715 100644
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -99,6 +99,7 @@
+ #include <kern/restartable.h>
+ #include <kern/sched.h>
+ #include <kern/sched_prim.h>
++#include <linux64/linux64.h>
+ #include <kern/sfi.h>
+ #include <kern/syscall_subr.h>
+ #include <kern/task.h>
+@@ -2948,6 +2949,7 @@ thread_invoke(
+ 
+ 	thread_continue_t       continuation = self->continuation;
+ 	void                    *parameter   = self->parameter;
++	linux64_count(LINUX64_CTR_SWITCHES); linux64_dbg[LINUX64_CTR_THREAD] = (unsigned long)thread;	/* LINUX64: for the host's monitor */
+ 
+ 	struct recount_snap snap = { 0 };
+ 	recount_snapshot(&snap);
+@@ -6366,6 +6368,7 @@ processor_idle(
+ 	cpu_quiescent_counter_leave(snap.rsn_time_mach);
+ 
+ 	while (1) {
++		linux64_count(LINUX64_CTR_IDLE_THREAD);	/* LINUX64: for the host's monitor */
+ 		/*
+ 		 * Ensure that updates to my processor and pset state,
+ 		 * made by the IPI source processor before sending the IPI,
+@@ -8936,3 +8939,45 @@ sysctl_get_quantum_us(void)
+ }
+ 
+ #endif /* DEVELOPMENT || DEBUG */
++
++/*
++ * LINUX64 (xnulinux) diagnostics: print every thread's state, wait event, continuation and a few saved frames, when the
++ * host asks (LINUX64_CTR_DUMP_REQ). Called from the hosted idle path with interrupts off; the list is walked without its
++ * lock (another CPU may change it meanwhile: a diagnostic, not a consistent snapshot).
++ */
++void
++linux64_dump_threads(void)
++{
++	thread_t t;
++	int n = 0;
++	extern int proc_pid(struct proc *);
++	queue_iterate(&threads, t, thread_t, threads) {
++		if (++n > 400) {
++			break;
++		}
++		void *bp = get_bsdthreadtask_info(t);
++		if (bp == NULL || proc_pid((struct proc *)bp) == 0) {
++			/* the kernel's own threads: only those blocked with a saved stack (not parked on a continuation) */
++			if (t->continuation != NULL || t->kernel_stack == 0) {
++				continue;
++			}
++			kprintf("linux64 proc 0 kernel_task\n");
++		} else {
++			kprintf("linux64 proc %d %s\n", proc_pid((struct proc *)bp), proc_name_address((struct proc *)bp));
++		}
++		struct arm_kernel_saved_state *ss = (struct arm_kernel_saved_state *)(void *)t->machine.kstackptr;
++		uint64_t lr = 0, fp = 0;
++		if (ss != NULL && t->kernel_stack != 0) {
++			lr = ss->lr | 0xffffff8000000000ULL;
++			fp = ss->fp;
++		}
++		kprintf("linux64 thread %p tid %llu state 0x%x pri %d wait %p cont %p lr 0x%llx\n",
++		    t, t->thread_id, t->state, t->sched_pri, (void *)t->wait_event, (void *)t->continuation, lr);
++		for (int f = 0; f < 14 && fp != 0 && t->kernel_stack != 0 &&
++		    fp >= t->kernel_stack && fp < t->kernel_stack + kernel_stack_size; f++) {
++			uint64_t *frame = (uint64_t *)fp;
++			kprintf("linux64     frame 0x%llx\n", frame[1] | 0xffffff8000000000ULL);
++			fp = frame[0];
++		}
++	}
++}
+diff --git a/osfmk/kern/stack.c b/osfmk/kern/stack.c
+index ce42b1a..b680b54 100644
+--- a/osfmk/kern/stack.c
++++ b/osfmk/kern/stack.c
+@@ -30,6 +30,7 @@
+  */
+ 
+ #include <mach/mach_host.h>
++#include <linux64/linux64.h>
+ #include <mach/mach_types.h>
+ #include <mach/processor_set.h>
+ 
+@@ -137,6 +138,24 @@ STARTUP(TUNABLES, STARTUP_RANK_MIDDLE, stack_init);
+  *	block.
+  */
+ 
++/*
++ * LINUX64 (xnulinux): an exception taken on an XNU kernel stack enters Linux's vectors, whose overflow check wants
++ * bit THREAD_SHIFT (14) of sp clear, as on Linux's 2*THREAD_SIZE-aligned stacks. Hosted, each stack starts on a
++ * 32 KiB boundary. The allocation's mask aligns the address after its first guard page (kernel_memory_allocate with
++ * KMA_GUARD_FIRST: the start plus one page is 32 KiB aligned), so the stack sits one page plus 32 KiB above the start
++ * (the two guard pages, then unused wired pages, then the stack, then the upper guard page), for any page size.
++ */
++static inline vm_offset_t
++linux64_stack_lead(void)
++{
++	return linux64_hook ? ptoa(1) + 0x8000 : ptoa(1);
++}
++static inline vm_offset_t
++linux64_stack_mask(void)
++{
++	return linux64_hook ? (stack_addr_mask | 0x7fff) : stack_addr_mask;
++}
++
+ static vm_offset_t
+ stack_alloc_internal(void)
+ {
+@@ -170,7 +189,7 @@ stack_alloc_internal(void)
+ 		 */
+ 
+ 		kernel_memory_allocate(kernel_map, &stack,
+-		    kernel_stack_size + ptoa(2), stack_addr_mask,
++		    kernel_stack_size + linux64_stack_lead() + ptoa(1), linux64_stack_mask(),
+ 		    flags, VM_KERN_MEMORY_STACK);
+ 
+ 		/*
+@@ -178,7 +197,10 @@ stack_alloc_internal(void)
+ 		 * guard page.  Skip past it to get the actual stack base address.
+ 		 */
+ 
+-		stack += PAGE_SIZE;
++		stack += linux64_stack_lead();
++		if (linux64_hook && (stack & 0x7fff)) {	/* Linux would take an exception on it for a stack overflow */
++			panic("linux64: kernel stack %p is not on a 32 KiB boundary", (void *)stack);
++		}
+ 	}
+ 	return stack;
+ }
+@@ -338,8 +360,8 @@ stack_collect(void)
+ 			stack = (vm_offset_t)vm_map_trunc_page(
+ 				stack,
+ 				VM_MAP_PAGE_MASK(kernel_map));
+-			stack -= PAGE_SIZE;
+-			kmem_free(kernel_map, stack, kernel_stack_size + ptoa(2));
++			stack -= linux64_stack_lead();
++			kmem_free(kernel_map, stack, kernel_stack_size + linux64_stack_lead() + ptoa(1));
+ 			stack = 0;
+ 
+ 			s = splsched();
+diff --git a/osfmk/mach/arm/thread_status.h b/osfmk/mach/arm/thread_status.h
+index 13f292a..82717bf 100644
+--- a/osfmk/mach/arm/thread_status.h
++++ b/osfmk/mach/arm/thread_status.h
+@@ -583,6 +583,7 @@ extern void ml_check_signed_state(const arm_saved_state_t *, uint64_t, uint32_t,
+ 	        asm volatile (                                                  \
+ 	                "mov	x9, lr"				"\n"            \
+ 	                "mov	x0, %[iss]"			"\n"            \
++	                "mrs	x10, SPSel"			"\n"            \
+ 	                "msr	SPSel, #1"			"\n"            \
+ 	                "ldp	x4, x5, [x0, %[SS64_X16]]"	"\n"            \
+ 	                "ldr	x7, [x0, %[SS64_PC]]"		"\n"            \
+@@ -595,7 +596,7 @@ extern void ml_check_signed_state(const arm_saved_state_t *, uint64_t, uint32_t,
+ 	                "mov	w2, w8"				"\n"            \
+ 	                _instr					"\n"            \
+ 	                "bl	_ml_sign_thread_state"		"\n"            \
+-	                "msr	SPSel, #0"			"\n"            \
++	                "msr	SPSel, x10"			"\n"            \
+ 	                "mov	lr, x9"				"\n"            \
+ 	                :                                                       \
+ 	                : [iss]         "r"(_iss),                              \
+@@ -604,7 +605,7 @@ extern void ml_check_signed_state(const arm_saved_state_t *, uint64_t, uint32_t,
+ 	                  [SS64_CPSR]	"i"(ss64_offsetof(cpsr)),               \
+ 	                  [SS64_LR]	"i"(ss64_offsetof(lr)),##__VA_ARGS__    \
+ 	                : "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", \
+-	                  "x9"                                                  \
++	                  "x9", "x10"                                                  \
+ 	        );                                                              \
+ 	        ml_pac_safe_interrupts_restore(_intr);                          \
+ 	} while (0)
+diff --git a/osfmk/prng/prng_random.c b/osfmk/prng/prng_random.c
+index c53d45d..3281632 100644
+--- a/osfmk/prng/prng_random.c
++++ b/osfmk/prng/prng_random.c
+@@ -26,6 +26,7 @@
+  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
+  */
+ 
++#include <linux64/linux64.h>
+ #include <kern/locks.h>
+ #include <kern/cpu_number.h>
+ #include <libkern/section_keywords.h>
+@@ -423,13 +424,20 @@ random_cpu_init(int cpu)
+ 		panic("random_cpu_init: kernel prng has not been installed");
+ 	}
+ 
+-	prng_funcs.initgen(prng_ctx, cpu);
++	if (prng_funcs.initgen != NULL) {
++		prng_funcs.initgen(prng_ctx, cpu);
++	}
+ }
+ 
+ /* export good random numbers to the rest of the kernel */
+ void
+ read_random(void * buffer, u_int numbytes)
+ {
++	/* LINUX64: hosted without the corecrypto kext prng_funcs stays zeroed; the host's generator stands in. */
++	if (prng_funcs.generate == NULL && linux64_hook) {
++		linux64_random(buffer, numbytes);
++		return;
++	}
+ 	prng_funcs.refresh(prng_ctx);
+ 	read_random_generate(buffer, numbytes);
+ }
+@@ -490,7 +498,9 @@ write_random(void * buffer, u_int numbytes)
+ 	SHA256_Final(seed, &ctx);
+ #endif
+ 
+-	prng_funcs.reseed(prng_ctx, sizeof(seed), seed);
++	if (prng_funcs.reseed != NULL) {
++		prng_funcs.reseed(prng_ctx, sizeof(seed), seed);
++	}
+ 	cc_clear(sizeof(seed), seed);
+ 
+ 	return 0;
+diff --git a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
+index 65144c7..f931cd6 100644
+--- a/pexpert/arm/pe_kprintf.c
++++ b/pexpert/arm/pe_kprintf.c
+@@ -5,6 +5,7 @@
+  * file: pe_kprintf.c
+  *    arm platform expert debugging output initialization.
+  */
++#include <linux64/linux64.h>
+ #include <stdarg.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
+@@ -102,6 +103,20 @@ kprintf(const char *fmt, ...)
+ 	boolean_t       state;
+ 	void           *caller = __builtin_return_address(0);
+ 
++	{
++		/* LINUX64 (xnulinux): hosted XNU prints through the host (dmesg). */
++		if (linux64_hook) {
++			extern int vsnprintf(char *, size_t, const char *, va_list);
++			char buf[256];
++			va_start(listp, fmt);
++			vsnprintf(buf, sizeof(buf), fmt, listp);
++			va_end(listp);
++			linux64_call(LINUX64_CALL_KPRINTF, buf);
++			(void)caller;
++			return;
++		}
++	}
++
+ 	if (!disable_serial_output && !disable_kprintf_output) {
+ 		va_start(listp, fmt);
+ 		va_copy(listp2, listp);

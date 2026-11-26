@@ -10,8 +10,11 @@ on:
         description: RELEASE / DEVELOPMENT / DEBUG
         default: DEVELOPMENT
       machine_config:
-        description: xnu MACHINE_CONFIG
+        description: xnu MACHINE_CONFIG (hosted builds use BCM2837)
         default: SWEET
+      hosted:
+        description: apply xnu/linux64 (XNU hosted inside Linux, docs/PORT-HOSTED.md)
+        default: "false"
       keep_going:
         description: make -k (collect all compile errors in one run)
         default: "true"
@@ -26,6 +29,7 @@ env:
   MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
   KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
   MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
+  HOSTED: ${{ inputs.hosted || 'false' }}
 
 jobs:
   build:
@@ -43,6 +47,8 @@ jobs:
           git -C dxb checkout -q FETCH_HEAD
           # 12.5-14.3 use the top-level patches dir; ours go next to blacktop's
           cp xnu/patches/*.patch xnu/patches/*.sh dxb/patches/
+          # applied after the direct port's series (file names sort last)
+          if [ "$HOSTED" = true ]; then cp xnu/linux64/*.patch dxb/patches/; fi
           # libfirehose_kernel is built arm64e-only; the SWEET kernel is plain arm64
           sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
           grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
@@ -67,7 +73,28 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
-        run: bash build.sh
+        run: |
+          set -o pipefail
+          bash build.sh 2>&1 | tee ../build.log
+
+      - name: Check the hosted patch applied
+        if: always() && inputs.hosted == 'true'
+        run: |
+          # build.sh only warns about a patch it cannot apply
+          git -C dxb/xnu apply -R --check "$PWD/xnu/linux64/9001-linux64-xnu8796.patch"
+
+      - name: Compile errors
+        if: always()
+        run: grep -nE '(error:|Error [0-9]+$|Undefined symbols|^  "_)' build.log | head -300 > errors.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xnu-log
+          path: |
+            build.log
+            errors.txt
+          retention-days: 7
 
       - name: Package build tree for local compiles
         if: always()
