@@ -21,6 +21,9 @@ T=$(sed -n 's/.*\breboot=\([0-9]*\).*/\1/p' /proc/cmdline); T=${T:-240}
 # if the whole machine hangs (a CPU lost to hosted XNU can take the others with it), the SoC watchdog restarts it
 (sleep 15; [ -c /dev/watchdog ] && watchdog -T 30 -t 5 /dev/watchdog) &
 
+# no battery-backed clock is read here: the build time of the image is a good enough wall clock (boot-arg epoch=)
+E=$(sed -n 's/.*\bepoch=\([0-9]*\).*/\1/p' /proc/cmdline); [ -n "$E" ] && date -s "@$E" > /dev/null
+
 # coldplug the modules (two passes: the second finds what the first created)
 for pass in 1 2; do
 	find /sys/devices -name modalias -exec cat {} + 2>/dev/null | sort -u | while read -r m; do modprobe -q "$m"; done

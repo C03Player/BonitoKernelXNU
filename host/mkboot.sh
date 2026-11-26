@@ -35,6 +35,10 @@ if [ -n "${HOSTED_KERNEL:-}" ]; then
 	cp hosted/fki-ko/fki.ko hosted/xnu-ko/xnu.ko "$R/hosted/"
 	cp "$HOSTED_KERNEL" "$R/lib/firmware/xnu/kernel.macho"
 	install -m755 host/initramfs/xnu-run "$R/bin/xnu-run"
+	# dmsetup (this machine's, with its libraries) for the writable snapshot of the root disk
+	mkdir -p "$R/dm"
+	D=$(command -v dmsetup)
+	cp -L "$D" $(ldd "$D" | grep -oE '/[^ )]+') "$R/dm/"
 	python3 host/mkadtprops.py "$R/lib/firmware/xnu/adtprops.bin"
 fi
 (cd "$R" && find . | cpio -o -H newc --quiet --owner=0:0 | gzip -9) > $W/initramfs.gz
@@ -50,6 +54,6 @@ cat "$K/arch/arm64/boot/Image.gz" $W/board.dtb > $W/Image.gz-dtb
 ls -l $W/Image.gz-dtb $W/initramfs.gz
 PYTHONPATH=downloads/mkbootimg python3 downloads/mkbootimg/mkbootimg.py --header_version 0 --kernel $W/Image.gz-dtb --ramdisk $W/initramfs.gz \
 	--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 --tags_offset 0x100 --pagesize 4096 \
-	--cmdline "console=tty0 panic=10 softlockup_panic=1 ${HOSTED_KERNEL:+cma=1700M@0x100000000} reboot=240 $EXTRA" -o "$IMG"
+	--cmdline "console=tty0 panic=10 softlockup_panic=1 ${HOSTED_KERNEL:+cma=1700M@0x100000000} reboot=240 epoch=$(date +%s) $EXTRA" -o "$IMG"
 python3 downloads/avb/avbtool.py add_hash_footer --image "$IMG" --partition_size 67108864 --partition_name boot
 ls -l "$IMG"
