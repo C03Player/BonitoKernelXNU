@@ -11,7 +11,7 @@ G=
 if [ "${XNU_GPU:-1}" = 1 ] && [ -c /dev/dri/renderD128 ]; then
 	pidof adrenod > /dev/null || setsid adrenod ${ADRENOD_V:--v} > /tmp/adrenod.log 2>&1 < /dev/null &
 	G="gpu_pool_mb=256"
-	GPUARGS="sweetmtl=2 sweetgpureserve=16"
+	GPUARGS="sweetmtl=2 sweetgpureserve=16${XNU_MESALOG:+ sweetmesalog=1}"
 fi
 # the iOS root: the direct port's HFS+ image on userdata. That partition is the fallback port's and is never written: it is set read-only in
 # Linux, and XNU gets a snapshot of it whose changes go to a file in RAM (gone at reboot). XNU_DISK= another partition.

@@ -923,6 +923,78 @@ index d405964..3033246 100644
  
  static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
  static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index bb2a2bf..14e9656 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -405,6 +405,48 @@ void (*unmountroot_pre_hook)(void);
+ #endif
+ void set_rootvnode(vnode_t);
+ 
++#if defined(SWEET_HOSTED)
++#include <sys/fcntl.h>
++#include <sys/vnode.h>
++
++/*
++ * LINUX64, debugging (boot-arg sweetmesalog=1): Turnip's own messages on the console. SweetMetal2 reads these two files when a process
++ * opens the GPU. Written from here because Linux mounts the not cleanly unmounted root only read-only. Retried until the root is writable.
++ */
++static void
++sweet_mesalog_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	static const struct { const char *path, *text; } files[] = {
++		{ "/private/var/local/mtl2-tu-debug", "default\n" },	/* leaves TU_DEBUG and MESA_LOG_FILE to the next file */
++		{ "/private/var/local/mtl2-env", "TU_DEBUG=sysmem\nMESA_LOG_FILE=/dev/console\n" },
++	};
++	unsigned done = 0;
++	int error = 0;
++
++	for (int tries = 0; tries < 600 && done < 2; tries++) {
++		vfs_context_t ctx = vfs_context_current();
++		vnode_t vp = NULLVP;
++
++		error = vnode_open(files[done].path, O_CREAT | O_TRUNC | FWRITE, 0644, 0, &vp, ctx);
++		if (error == 0) {
++			error = vn_rdwr(UIO_WRITE, vp, __DECONST(caddr_t, files[done].text), (int)strlen(files[done].text), 0,
++			    UIO_SYSSPACE, 0, vfs_context_ucred(ctx), NULL, vfs_context_proc(ctx));
++			vnode_close(vp, FWRITE, ctx);
++			if (error == 0) {
++				printf("SWEET mesalog: wrote %s (try %d)\n", files[done].path, tries);
++				done++;
++				continue;
++			}
++		}
++		delay_for_interval(100, NSEC_PER_MSEC);
++	}
++	if (done < 2) {
++		printf("SWEET mesalog: could not write %s: %d\n", files[done].path, error);
++	}
++	thread_terminate(current_thread());
++}
++#endif
++
+ extern lck_rw_t rootvnode_rw_lock;
+ 
+ SECURITY_READ_ONLY_LATE(struct mach_vm_range) bsd_pageable_range = {};
+@@ -1043,6 +1085,18 @@ bsd_init(void)
+ 	bsd_init_kprintf("calling siginit\n");
+ 	siginit(kernproc);
+ 
++#if defined(SWEET_HOSTED)
++	{
++		uint32_t on = 0;
++		thread_t t;
++
++		if (PE_parse_boot_argn("sweetmesalog", &on, sizeof(on)) && on &&
++		    kernel_thread_start(sweet_mesalog_thread, NULL, &t) == KERN_SUCCESS) {
++			thread_deallocate(t);
++		}
++	}
++#endif
++
+ 	bsd_init_kprintf("calling bsd_utaskbootstrap\n");
+ 	bsd_utaskbootstrap();
+ 
 diff --git a/bsd/kern/linux64_host.c b/bsd/kern/linux64_host.c
 new file mode 100644
 index 0000000..00cb495
@@ -1310,7 +1382,7 @@ index 7a32a23..776fcbe 100644
  	    platform_name);
  
 diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
-index 7fb6243..491457b 100644
+index 7fb6243..0c18304 100644
 --- a/iokit/Kernel/arm/SweetAccelerator.cpp
 +++ b/iokit/Kernel/arm/SweetAccelerator.cpp
 @@ -35,6 +35,28 @@
@@ -1381,6 +1453,16 @@ index 7fb6243..491457b 100644
  {
  	static uint32_t logged;
  #define V2_IN(T)        if (in == NULL || inSize != sizeof(T)) return kIOReturnBadArgument; const T *rq = (const T *)in
+@@ -864,6 +909,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+ 		V2_OUT(NativeAdrenoAbiStatus);
+ 		if (sweet_gpu_lost(&fEpoch, fLastFence)) {
+ 			fFaults++;
++#if defined(SWEET_HOSTED)
++			IOLog("SWEET MTL: v2 %s GPU fault count now %llu (service faults %llu)\n", fName, fFaults, fEpoch);
++#endif
+ 		}
+ 		rp->faults = fFaults;
+ 		return kIOReturnSuccess;
 diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 index 2545cf9..9a9f5de 100644
 --- a/iokit/Kernel/arm/SweetCPU.cpp
