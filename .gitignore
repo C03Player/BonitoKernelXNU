@@ -1,0 +1,21 @@
+# upstream clones and reference trees
+xnulinux/
+third_party/
+reference-ios-direct-port
+# local inputs and proprietary / device-specific data: never committed
+images/
+stock/
+downloads/
+backup/
+work/
+logs/
+ios-root/
+*.ipsw
+*.img
+*.bin
+*.o
+out/
+docker/
+bonito/research/
+__pycache__/
+*.pyc

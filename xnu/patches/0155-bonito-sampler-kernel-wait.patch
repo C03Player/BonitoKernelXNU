@@ -1,0 +1,270 @@
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -1000,9 +1000,236 @@
+  */
+ void sweet_sample_task(const char *name, int pid, task_t task);
+ 
++/*
++ * Where is a thread that burns CPU in the kernel? A cross call makes its CPU run sweet_xc_capture() in interrupt context; the
++ * frame pointer chain from there continues through the interrupted kernel code, so the return addresses are its callers
++ * (printed unslid: look them up in the kernel binary). The leaf function itself is not in the chain.
++ */
++extern kern_return_t cpu_xcall(int, void (*)(void *), void *);
++extern vm_offset_t ml_static_unslide(vm_offset_t);
++static uint64_t sweet_xc_bt[32];
++static volatile int sweet_xc_n, sweet_xc_done;
++static uint64_t sweet_xc_ttbr0, sweet_xc_tcr, sweet_xc_sctlr;
++
++static void
++sweet_xc_capture(void *arg)
++{
++	thread_t th = (thread_t)arg;
++	uint64_t fp = (uint64_t)__builtin_frame_address(0);
++	uint64_t ks = (uint64_t)th->kernel_stack, ke = ks + KERNEL_STACK_SIZE;
++	int n = 0;
++
++	__asm__ volatile ("mrs %0, ttbr0_el1" : "=r" (sweet_xc_ttbr0));
++	__asm__ volatile ("mrs %0, tcr_el1" : "=r" (sweet_xc_tcr));
++	__asm__ volatile ("mrs %0, sctlr_el1" : "=r" (sweet_xc_sctlr));
++	sweet_xc_n = 0;
++	while (n < 32 && fp != 0 && (fp & 7) == 0 && fp >= 0xfffffe0000000000ull) {
++		uint64_t *f = (uint64_t *)fp;
++		uint64_t nfp;
++		sweet_xc_bt[n++] = f[1];
++		nfp = f[0];
++		/* the next frame is higher on the same stack, or (leaving the interrupt stack) inside the thread's kernel stack */
++		if (!((nfp > fp && nfp - fp < 0x4000) || (nfp >= ks && nfp < ke && (fp < ks || fp >= ke)))) {
++			break;
++		}
++		fp = nfp;
++	}
++	sweet_xc_n = n;
++	__asm__ volatile ("dmb ish" ::: "memory");
++	sweet_xc_done = 1;
++}
++
++/*
++ * boot-arg sweetsampletlbi=1: a thread that is stuck in the kernel (runnable, over 5 s of system time) is the page fault livelock: the
++ * last exception is a user write with a level 3 translation fault at an address the pmap says it has mapped. Print the physical
++ * page the pmap has for that address, flush all TLBs (tlbi vmalle1is), wait one second and show whether the thread moved on.
++ */
++static uint64_t sweet_xc_va;
++
++/* runs ON the stuck CPU (cross call): clean+invalidate its own copy of the cache line with the descriptor, drop its TLB entries */
++static void
++sweet_xc_civac(__unused void *arg)
++{
++	__asm__ volatile ("dsb sy; dc civac, %0; dsb sy; tlbi vmalle1; dsb nsh; isb" :: "r" (sweet_xc_va) : "memory");
++}
++
++static void
++sweet_xc_flush_all(__unused void *arg)
++{
++	extern void FlushPoC_Dcache(void);
++	FlushPoC_Dcache();
++	__asm__ volatile ("dsb sy; tlbi vmalle1; dsb nsh; isb" ::: "memory");
++}
++
++static void
++sweet_sample_tlbi_test(task_t task, thread_t thread, arm_saved_state_t *ss, const char *name, int tn)
++{
++	static int enabled = -1;
++	extern void CleanPoC_Dcache(void);
++	extern unsigned int cpu_broadcast_xcall_simple(boolean_t, void (*)(void *), void *);
++	time_value_t ut, st, ut2, st2;
++	uint64_t l3_kva = 0;
++	uint64_t far = const_saved_state64(ss)->far, pc = get_saved_state_pc(ss);
++	extern ppnum_t pmap_find_phys(pmap_t, addr64_t);
++
++	if (enabled < 0) {
++		uint32_t v = 0;
++		PE_parse_boot_argn("sweetsampletlbi", &v, sizeof(v));
++		enabled = (int)v;       /* 1 flush the TLBs, 2 clean the data caches of every CPU (the walker may not see the PTE the kernel wrote) */
++	}
++	thread_read_times(thread, &ut, &st, NULL);
++	if (!(thread->state & TH_RUN) || st.seconds < 5) {
++		return;
++	}
++	{
++		/* walk the process's tables for far by hand (16K granule, T0SZ 17: L1 index bits 46:36, L2 35:25, L3 24:14) and print the descriptors */
++		extern vm_map_address_t phystokv(pmap_paddr_t);
++		pmap_t pm = get_task_pmap(task);
++		uint64_t idx[3] = { (far >> 36) & 0x7ff, (far >> 25) & 0x7ff, (far >> 14) & 0x7ff };
++		uint64_t pa = pm->ttep, desc[3] = { 0, 0, 0 };
++		int lv;
++		l3_kva = 0;
++		for (lv = 0; lv < 3; lv++) {
++			if (pa < 0x80000000ull || pa >= 0x200000000ull || (pa & 0x3fff)) {
++				break;
++			}
++			desc[lv] = *(volatile uint64_t *)(phystokv(pa) + idx[lv] * 8);
++			l3_kva = (uint64_t)(phystokv(pa) + idx[lv] * 8);
++			if ((desc[lv] & 3) != 3 || lv == 2) {
++				break;
++			}
++			pa = desc[lv] & 0x0000ffffffffc000ull;
++		}
++		printf("SMP %s t%d walk of far 0x%llx: L1[%llu]=0x%llx L2[%llu]=0x%llx L3[%llu]=0x%llx (type %llu, AF %llu, AP %llu, SH %llu, AttrIdx %llu, PXN/UXN %llu/%llu, nG %llu, OA 0x%llx)\n",
++		    name, tn, (unsigned long long)far, (unsigned long long)idx[0], (unsigned long long)desc[0], (unsigned long long)idx[1],
++		    (unsigned long long)desc[1], (unsigned long long)idx[2], (unsigned long long)desc[2], (unsigned long long)(desc[2] & 3),
++		    (unsigned long long)((desc[2] >> 10) & 1), (unsigned long long)((desc[2] >> 6) & 3), (unsigned long long)((desc[2] >> 8) & 3),
++		    (unsigned long long)((desc[2] >> 2) & 7), (unsigned long long)((desc[2] >> 53) & 1), (unsigned long long)((desc[2] >> 54) & 1),
++		    (unsigned long long)((desc[2] >> 11) & 1), (unsigned long long)(desc[2] & 0x0000ffffffffc000ull));
++	}
++	if (!enabled) {
++		return;
++	}
++	printf("SMP %s t%d tlbi test: pmap has pa 0x%llx for far 0x%llx; %s\n", name, tn,
++	    (unsigned long long)ptoa_64(pmap_find_phys(get_task_pmap(task), (addr64_t)far)), (unsigned long long)far,
++	    enabled == 6 ? "dc civac of the descriptor on the stuck CPU" : enabled == 5 ? "flushing (clean+invalidate) every CPU's data cache" :
++	    enabled == 4 ? "rewriting the descriptor (break before make)" : enabled == 3 ? "cleaning the descriptor's cache line" :
++	    enabled == 2 ? "cleaning the data caches of every CPU" : "flushing all TLBs");
++	if (enabled == 5) {
++		/* clean AND invalidate the data cache on every CPU, the stuck one included */
++		(void)cpu_broadcast_xcall_simple(TRUE, sweet_xc_flush_all, NULL);
++	} else if (enabled == 6 && l3_kva && thread->last_processor != PROCESSOR_NULL) {
++		/* invalidate the descriptor's line in the stuck CPU's own caches */
++		int cpu = (int)thread->last_processor->cpu_id;
++		sweet_xc_va = l3_kva;
++		if (cpu == (int)cpu_number()) {
++			sweet_xc_civac(NULL);
++		} else {
++			(void)cpu_xcall(cpu, sweet_xc_civac, NULL);
++		}
++	} else if (enabled == 3 && l3_kva) {
++		/* clean+invalidate just the cache line holding the descriptor (by address, to the point of coherency), then flush the TLBs */
++		__asm__ volatile ("dsb sy; dc civac, %0; dsb sy; tlbi vmalle1is; dsb ish; isb" :: "r" (l3_kva) : "memory");
++	} else if (enabled == 4 && l3_kva) {
++		/* break before make: invalid, flush, the same descriptor again, flush */
++		volatile uint64_t *p = (volatile uint64_t *)l3_kva;
++		uint64_t old = *p;
++		*p = 0;
++		__asm__ volatile ("dsb ishst; tlbi vmalle1is; dsb ish; isb" ::: "memory");
++		*p = old;
++		__asm__ volatile ("dsb ishst; dc civac, %0; dsb sy; tlbi vmalle1is; dsb ish; isb" :: "r" (l3_kva) : "memory");
++	} else if (enabled == 2) {
++		(void)cpu_broadcast_xcall_simple(TRUE, (void (*)(void *))CleanPoC_Dcache, NULL);
++	} else {
++		__asm__ volatile ("dsb ishst; tlbi vmalle1is; dsb ish; isb" ::: "memory");
++	}
++	delay(1000000);
++	thread_read_times(thread, &ut2, &st2, NULL);
++	printf("SMP %s t%d after the flush (1 s): state 0x%x, system time +%d us, user time +%d us, far 0x%llx pc 0x%llx (before: pc 0x%llx)\n",
++	    name, tn, (unsigned)thread->state,
++	    (st2.seconds - st.seconds) * 1000000 + (st2.microseconds - st.microseconds),
++	    (ut2.seconds - ut.seconds) * 1000000 + (ut2.microseconds - ut.microseconds),
++	    (unsigned long long)const_saved_state64(ss)->far, (unsigned long long)get_saved_state_pc(ss), (unsigned long long)pc);
++}
++
++static void
++sweet_sample_kstack(task_t task, thread_t thread)
++{
++	processor_t pr = thread->last_processor;
++	int cpu, me;
++	char line[400];
++	int n;
++
++	if (pr == PROCESSOR_NULL || !(thread->state & TH_RUN) || thread->runq != PROCESSOR_NULL) {
++		return;
++	}
++	cpu = (int)pr->cpu_id;
++	me = (int)cpu_number();
++	if (cpu == me) {
++		return;
++	}
++	sweet_xc_done = 0;
++	if (cpu_xcall(cpu, sweet_xc_capture, thread) != KERN_SUCCESS) {
++		printf("SMP kstack: cpu_xcall to cpu %d failed\n", cpu);
++		return;
++	}
++	for (int i = 0; i < 300 && !sweet_xc_done; i++) {
++		delay(1000);
++	}
++	if (!sweet_xc_done) {
++		printf("SMP kstack: cpu %d did not answer\n", cpu);
++		return;
++	}
++	n = snprintf(line, sizeof(line), "SMP kstack cpu %d (the thread ran there last), callers unslid:", cpu);
++	for (int i = 0; i < sweet_xc_n && n < (int)sizeof(line) - 20; i++) {
++		n += snprintf(line + n, sizeof(line) - n, " 0x%llx", (unsigned long long)ml_static_unslide((vm_offset_t)sweet_xc_bt[i]));
++	}
++	printf("%s\n", line);
++	/* the translation the CPU really uses against the process's page table root: TTBR0 low 48 bits (minus the ASID) must equal pmap->ttep */
++	printf("SMP kstack cpu %d: ttbr0 0x%llx (base 0x%llx asid %u), process pmap root 0x%llx asid %u, tcr 0x%llx (IPS %u, T0SZ %u, TG0 %u), sctlr 0x%llx\n",
++	    cpu, (unsigned long long)sweet_xc_ttbr0, (unsigned long long)(sweet_xc_ttbr0 & 0x0000fffffffffffeull),
++	    (unsigned)(sweet_xc_ttbr0 >> 48), (unsigned long long)get_task_pmap(task)->ttep, (unsigned)get_task_pmap(task)->hw_asid,
++	    (unsigned long long)sweet_xc_tcr, (unsigned)((sweet_xc_tcr >> 32) & 7), (unsigned)(sweet_xc_tcr & 0x3f),
++	    (unsigned)((sweet_xc_tcr >> 14) & 3), (unsigned long long)sweet_xc_sctlr);
++}
++
++/* page counts and the busy kernel threads: is a stalled boot a reclaim fight (memory pressure) between CPUs? */
++extern unsigned int vm_page_free_count, vm_page_active_count, vm_page_inactive_count, vm_page_speculative_count, vm_page_wire_count;
++extern unsigned int vm_page_throttled_count, vm_page_free_target, vm_page_free_min, vm_page_free_reserved, vm_page_pageable_internal_count,
++    vm_page_pageable_external_count, vm_page_purgeable_count;
++
++static void
++sweet_sample_kernel_threads(task_t task)
++{
++	thread_t thread;
++
++	printf("SMP vm: free %u (min %u target %u reserved %u) active %u inactive %u speculative %u wired %u throttled %u pageable int/ext %u/%u purgeable %u\n",
++	    vm_page_free_count, vm_page_free_min, vm_page_free_target, vm_page_free_reserved, vm_page_active_count, vm_page_inactive_count,
++	    vm_page_speculative_count, vm_page_wire_count, vm_page_throttled_count, vm_page_pageable_internal_count,
++	    vm_page_pageable_external_count, vm_page_purgeable_count);
++	task_lock(task);
++	queue_iterate(&task->threads, thread, thread_t, task_threads) {
++		time_value_t ut, st;
++		extern uint64_t mach_absolute_time(void);
++		thread_read_times(thread, &ut, &st, NULL);
++		if (!(thread->state & TH_RUN) && st.seconds < 2) {
++			continue;       /* quiet kernel threads: not interesting */
++		}
++		printf("SMP kthread %p state 0x%x pri %d/%d sys %d.%03d s cont %#llx event %#llx lastcpu %d\n", thread, (unsigned)thread->state,
++		    thread->sched_pri, thread->base_pri, st.seconds, st.microseconds / 1000,
++		    (unsigned long long)ml_static_unslide((vm_offset_t)thread->continuation), (unsigned long long)thread->wait_event,
++		    thread->last_processor != PROCESSOR_NULL ? (int)thread->last_processor->cpu_id : -1);
++	}
++	task_unlock(task);
++}
++
+ void
+ sweet_sample_task(const char *name, int pid, task_t task)
+ {
++	if (pid == 0) {
++		sweet_sample_kernel_threads(task);
++		return;
++	}
+ 	vm_map_t map = get_task_map(task);
+ 	uint64_t slide = 0;
+ 	int tn = 0;
+@@ -1040,6 +1267,29 @@
+ 			fp = frame[0];
+ 		}
+ 		printf("%s\n", line);
++		/* what the thread is blocked in: the syscall (x16: negative = Mach trap) and its first arguments, then the kernel's wait */
++		printf("SMP %s t%d x16 %lld x0 0x%llx x1 0x%llx x2 0x%llx | kernel: state 0x%x hint %d event 0x%llx cont 0x%llx wait_result %d\n",
++		    name, tn - 1, (long long)get_saved_state_reg(ss, 16), get_saved_state_reg(ss, 0), get_saved_state_reg(ss, 1),
++		    get_saved_state_reg(ss, 2), (unsigned)thread->state, (int)thread->block_hint, (unsigned long long)thread->wait_event,
++		    (unsigned long long)(uintptr_t)thread->continuation, (int)thread->wait_result);
++		{
++			/* CPU time used, run queue, priority, and when it last ran: a runnable thread that never runs is starved, one with a lot of
++			 * system time is spinning in the kernel */
++			time_value_t ut, st;
++			extern uint64_t mach_absolute_time(void);
++			thread_read_times(thread, &ut, &st, NULL);
++			printf("SMP %s t%d cpu user %d.%06d s sys %d.%06d s, runq %d pri %d/%d lastcpu %d last_run %llu now %llu\n", name, tn - 1,
++			    ut.seconds, ut.microseconds, st.seconds, st.microseconds, thread->runq != PROCESSOR_NULL, thread->sched_pri,
++			    thread->base_pri, thread->last_processor != PROCESSOR_NULL ? (int)thread->last_processor->cpu_id : -1,
++			    (unsigned long long)thread->last_run_time, (unsigned long long)mach_absolute_time());
++		}
++		/* the last user fault: a thread that keeps faulting at one address shows the same far/esr in every sample (EC 0x20/0x21 instruction
++		 * abort, 0x24/0x25 data abort; the low bits of ISS say translation/access/permission fault) */
++		printf("SMP %s t%d last exception: far 0x%llx esr 0x%x (EC 0x%x) pc 0x%llx\n", name, tn - 1,
++		    (unsigned long long)const_saved_state64(ss)->far, (unsigned)const_saved_state64(ss)->esr,
++		    (unsigned)(const_saved_state64(ss)->esr >> 26), (unsigned long long)get_saved_state_pc(ss));
++		sweet_sample_kstack(task, thread);
++		sweet_sample_tlbi_test(task, thread, ss, name, tn - 1);
+ 	}
+ 	task_unlock(task);
+ }

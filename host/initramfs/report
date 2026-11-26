@@ -1,0 +1,17 @@
+#!/bin/sh
+# What gate 1 (docs/XNULINUX-EVAL.md) asks of a host kernel.
+s() { echo; echo "== $*"; }
+s kernel; uname -a; cat /proc/cmdline
+s cpu; grep -c ^processor /proc/cpuinfo; grep -E 'Features|CPU part' /proc/cpuinfo | sort | uniq -c
+s model; tr '\0' ' ' < /proc/device-tree/model; echo
+s memory; grep -E 'MemTotal|MemAvailable|Cma' /proc/meminfo
+s iomem; cat /proc/iomem
+s config; zcat /proc/config.gz | grep -E '^(# )?CONFIG_(MODULES|KPROBES|KALLSYMS_ALL|CMA|ARM64_VA_BITS|UNMAP_KERNEL_AT_EL0|ARM64_SW_TTBR0_PAN|RANDOMIZE_BASE|CFI|SHADOW_CALL_STACK|ARM64_4K_PAGES)[ =]'
+s kpti-and-mitigations; dmesg | grep -i -E 'page table isolation|kpti|CPU features: detected'
+s symbols; grep -E ' (kallsyms_lookup_name|set_memory_x|__do_kernel_fault|die|cma_alloc|alloc_contig_pages_noprof)$' /proc/kallsyms
+s display; ls /sys/class/drm; cat /sys/class/drm/*/status 2>/dev/null; ls /dev/dri
+s net; ip -br link 2>/dev/null || ifconfig -a
+s remoteproc; for r in /sys/class/remoteproc/*; do echo "$r $(cat $r/name) $(cat $r/state)"; done
+s block; cat /proc/partitions | head -n 20
+s modules; lsmod
+s errors; dmesg | grep -i -E 'fail|error|firmware' | head -n 80

@@ -1,0 +1,46 @@
+#!/bin/sh
+# Gate-1 test userland: USB Ethernet to the PC (192.168.7.2, same MACs and ids as the iOS gadget so bonito/tools/usbbridge.py works), telnet + http,
+# a report in /www, and a timed reboot to the bootloader (boot-arg reboot=SECS, default 240).
+/bin/busybox --install -s /bin
+export PATH=/bin
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mkdir -p /dev/pts /sys/kernel/config /sys/kernel/debug /www /tmp
+mount -t devpts devpts /dev/pts
+mount -t configfs configfs /sys/kernel/config
+mount -t debugfs debugfs /sys/kernel/debug
+
+# the way back comes first: whatever hangs below, the phone returns to the bootloader
+T=$(sed -n 's/.*\breboot=\([0-9]*\).*/\1/p' /proc/cmdline); T=${T:-240}
+(sleep "$T"; sync; rebootto bootloader) &
+
+# the DSI panel device has no modalias file, so coldplug misses its driver (display and GPU wait for it); this unit has the Samsung panel
+(sleep 2; modprobe panel-samsung-sofef00-bonito) &
+
+# coldplug the modules (two passes: the second finds what the first created)
+for pass in 1 2; do
+	find /sys/devices -name modalias -exec cat {} + 2>/dev/null | sort -u | while read -r m; do modprobe -q "$m"; done
+	sleep 3
+done
+
+G=/sys/kernel/config/usb_gadget/g1
+mkdir -p $G/strings/0x409 $G/configs/c.1 $G/functions/ecm.usb0
+echo 0x18d1 > $G/idVendor
+echo 0x4ee1 > $G/idProduct
+echo "Sweet Linux (USB Ethernet)" > $G/strings/0x409/product
+echo bonito > $G/strings/0x409/serialnumber
+echo 02:00:5e:77:ee:01 > $G/functions/ecm.usb0/host_addr
+echo 02:00:5e:77:ee:02 > $G/functions/ecm.usb0/dev_addr
+ln -s $G/functions/ecm.usb0 $G/configs/c.1/
+for i in $(seq 1 20); do UDC=$(ls /sys/class/udc | head -n 1); [ -n "$UDC" ] && break; sleep 1; done
+echo "$UDC" > $G/UDC
+ifconfig lo 127.0.0.1 up
+ifconfig usb0 192.168.7.2 netmask 255.255.255.0 up
+
+# servers first: a report step that hangs must not hide the machine
+dmesg > /www/dmesg.txt
+telnetd -l /bin/sh
+httpd -h /www
+report > /www/report.txt 2>&1 &
+while :; do sleep 10; dmesg > /www/dmesg.txt; done
