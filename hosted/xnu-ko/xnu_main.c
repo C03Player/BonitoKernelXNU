@@ -215,6 +215,10 @@ static const char *cmdline_16k = " vm_compression_limit=393216 linux64_vm16k=1";
  * PAGE_RATIO 4): a quarter of the page faults of 4 KB pages; vm16k=0 gives 4 KB VM pages */
 static int vm16k = 1;
 module_param(vm16k, int, 0444);
+/* bonito port: GPU memory after XNU's RAM, in the same contiguous region (the GPU bridge, docs/GPU-BRIDGE.md); /chosen "linux64-gpu-pool" */
+static int gpu_pool_mb;
+module_param(gpu_pool_mb, int, 0444);
+static u64_t gpu_pool_pa, gpu_pool_size;
 
 
 /* Walk XNU's kernel tables (inside its contiguous DRAM) for va and log the descriptors. */
@@ -834,6 +838,10 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 	adt_prop_str(&a, "name", "chosen");
 	adt_prop_u64(&a, "dram-base", phys);
 	adt_prop_u64(&a, "dram-size", size);
+	if (gpu_pool_size) {
+		u64_t pool[2] = { gpu_pool_pa, gpu_pool_size };
+		adt_prop(&a, "linux64-gpu-pool", pool, sizeof(pool));
+	}
 	adt_prop(&a, "random-seed", seed, sizeof(seed));
 	adt_prop_str(&a, "firmware-version", "xnulinux-m2");
 	adt_prop_u32(&a, "debug-enabled", 1);
@@ -1279,7 +1287,7 @@ static int run_m2b(void)
 	u64_t image_size = img.vmhigh - img.vmlow;
 	if (img.vmlow < 0xffffffe000000000ULL) { logs("xnu: unexpected link address"); return -22; }
 	u64_t image_off = img.vmlow - XNU_WINDOW_BASE;
-	u64_t want = image_off + image_size + 0x60000 + BOOT_EXTRA + ((u64_t)ram_mb << 20);
+	u64_t want = image_off + image_size + 0x60000 + BOOT_EXTRA + ((u64_t)ram_mb << 20) + ((u64_t)gpu_pool_mb << 20);
 	int err = fki_contig_alloc(want, &img.region);
 	if (err) { logkv("xnu: contiguous allocation failed, err", (u64_t)err); return err; }
 	logkv("xnu: contiguous DRAM at phys", img.region.pa);
@@ -1322,7 +1330,10 @@ static int run_m2b(void)
 	unsigned char *base = (unsigned char *)XNU_WINDOW_BASE;
 	macho_copy(&img, base + image_off);
 	img.slide = 0;
-	struct boot_args_v2 *ba = build_boot(base, img.region.pa, img.region.size, image_off, image_size);
+	gpu_pool_size = (u64_t)gpu_pool_mb << 20;
+	gpu_pool_pa = img.region.pa + img.region.size - gpu_pool_size;
+	if (gpu_pool_size) logkv("xnu: GPU pool at phys", gpu_pool_pa);
+	struct boot_args_v2 *ba = build_boot(base, img.region.pa, img.region.size - gpu_pool_size, image_off, image_size);
 	if (!ba) return -22;
 	return enter_arm_init(ba);
 }

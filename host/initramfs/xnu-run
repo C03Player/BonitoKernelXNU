@@ -6,6 +6,13 @@
 [ -f /lib/firmware/xnu/kernel.macho ] || { echo "no hosted kernel in this image"; exit 1; }
 # XNU's CPUs on the fast cores first (Kryo 360: Linux CPUs 6-7 are the Cortex-A75s, 0-5 the A55s); the host's helpers get the next ones
 grep -q '^fki ' /proc/modules || insmod /hosted/fki.ko cpu_list=${XNU_CPU_LIST:-6,7,5,4,3,2,1,0} || exit 1
+# the GPU bridge (docs/GPU-BRIDGE.md): adrenod serves the hosted system's GPU requests on Linux's render node. XNU_GPU=0 leaves it out.
+G=
+if [ "${XNU_GPU:-1}" = 1 ] && [ -c /dev/dri/renderD128 ]; then
+	pidof adrenod > /dev/null || setsid adrenod -v > /tmp/adrenod.log 2>&1 < /dev/null &
+	G="gpu_pool_mb=256"
+	GPUARGS="sweetmtl=2"
+fi
 # the iOS root: the direct port's HFS+ image on userdata. That partition is the fallback port's and is never written: it is set read-only in
 # Linux, and XNU gets a snapshot of it whose changes go to a file in RAM (gone at reboot). XNU_DISK= another partition.
 D=${XNU_DISK-/dev/mmcblk0p72}
@@ -28,7 +35,7 @@ fi
 : > /tmp/xnuinput
 pidof evrelay > /dev/null || setsid evrelay /tmp/xnuinput > /tmp/evrelay.log 2>&1 < /dev/null &
 # boot-args the direct port's userland needs (bonito/tools/mkios.sh), without its hardware ones
-A="cpus=${XNU_CPUS:-1} keepsyms=1 serial=0 rootrw=1 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
+A="${GPUARGS:+$GPUARGS }cpus=${XNU_CPUS:-1} keepsyms=1 serial=0 rootrw=1 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
 # the hosted display: a framebuffer in XNU's memory, copied to the host's fb0 (the text console lets go of it first)
 for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" $v/name 2>/dev/null && echo 0 > $v/bind; done
 F=
@@ -38,5 +45,5 @@ if [ -c /dev/fb0 ]; then
 	F="fb_width=1080 fb_height=2160 fb_dump=/tmp/xnufb fb_dump_ms=33"
 	pidof fbcopy > /dev/null || setsid fbcopy /tmp/xnufb > /dev/null 2>&1 < /dev/null &
 fi
-setsid insmod /hosted/xnu.ko $F input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-1} ram_mb=1536 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+setsid insmod /hosted/xnu.ko $F $G input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-1} ram_mb=1536 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
 echo started

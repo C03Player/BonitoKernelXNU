@@ -14,7 +14,10 @@
  */
 #include "fki.h"
 #include "fki_internal.h"
+#include <linux/dma-buf.h>
+#include <linux/dma-mapping.h>
 #include <linux/fs.h>
+#include <linux/scatterlist.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -38,6 +41,19 @@ struct xnu_hostcall_range {
 	__u64 va, len;			/* 4 KiB aligned; UNPIN: the va of a PIN (len unused) */
 };
 #define XNU_HOSTCALL_PIN _IOW('X', 2, struct xnu_hostcall_range)
+/*
+ * bonito port: physical pages of the foreign kernel's memory as a dma-buf, for the GPU bridge (host/adrenod.c): the service imports it into the
+ * DRM driver (PRIME) so the GPU reads and writes the foreign kernel's own pages. Every page must be ordinary RAM with a struct page (the foreign
+ * kernel's memory and its GPU pool are CMA pages); the pages are not pinned here: the foreign kernel keeps them until it unmaps them.
+ */
+struct xnu_hostcall_dmabuf {
+	__u64 pa;			/* user pointer: one __u64 physical address per 4 KiB page */
+	__u64 n;			/* pages */
+	__s32 fd;			/* out: the dma-buf */
+	__u32 pad;
+};
+#define XNU_HOSTCALL_DMABUF _IOWR('X', 4, struct xnu_hostcall_dmabuf)
+MODULE_IMPORT_NS("DMA_BUF");
 #define XNU_HOSTCALL_UNPIN _IOW('X', 3, struct xnu_hostcall_range)
 #define HC_PIN_MAX ((1UL << 30) >> PAGE_SHIFT)
 
@@ -305,8 +321,106 @@ static long hc_pin(struct hc_file *hf, unsigned int cmd, struct xnu_hostcall_ran
 	return 0;
 }
 
+struct hc_dmabuf { struct page **pages; unsigned long n; };
+
+static struct sg_table *hc_db_map(struct dma_buf_attachment *at, enum dma_data_direction dir)
+{
+	struct hc_dmabuf *d = at->dmabuf->priv;
+	struct sg_table *sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	int err;
+
+	if (!sgt)
+		return ERR_PTR(-ENOMEM);
+	err = sg_alloc_table_from_pages(sgt, d->pages, d->n, 0, d->n << PAGE_SHIFT, GFP_KERNEL);
+	if (!err)
+		err = dma_map_sgtable(at->dev, sgt, dir, DMA_ATTR_SKIP_CPU_SYNC);
+	if (err) {
+		sg_free_table(sgt);
+		kfree(sgt);
+		return ERR_PTR(err);
+	}
+	return sgt;
+}
+
+static void hc_db_unmap(struct dma_buf_attachment *at, struct sg_table *sgt, enum dma_data_direction dir)
+{
+	dma_unmap_sgtable(at->dev, sgt, dir, DMA_ATTR_SKIP_CPU_SYNC);
+	sg_free_table(sgt);
+	kfree(sgt);
+}
+
+static void hc_db_release(struct dma_buf *db)
+{
+	struct hc_dmabuf *d = db->priv;
+
+	kvfree(d->pages);
+	kfree(d);
+}
+
+static const struct dma_buf_ops hc_db_ops = {
+	.map_dma_buf = hc_db_map,
+	.unmap_dma_buf = hc_db_unmap,
+	.release = hc_db_release,
+};
+
+static long hc_dmabuf(struct xnu_hostcall_dmabuf __user *ua)
+{
+	struct xnu_hostcall_dmabuf a;
+	DEFINE_DMA_BUF_EXPORT_INFO(info);
+	struct hc_dmabuf *d;
+	struct dma_buf *db;
+	u64 __user *src;
+	unsigned long i;
+	int fd;
+
+	if (copy_from_user(&a, ua, sizeof(a)))
+		return -EFAULT;
+	if (a.n == 0 || a.n > (1UL << 18))
+		return -EINVAL;
+	d = kzalloc(sizeof(*d), GFP_KERNEL);
+	if (!d)
+		return -ENOMEM;
+	d->pages = kvmalloc_array(a.n, sizeof(*d->pages), GFP_KERNEL);
+	if (!d->pages) {
+		kfree(d);
+		return -ENOMEM;
+	}
+	d->n = a.n;
+	src = u64_to_user_ptr(a.pa);
+	for (i = 0; i < a.n; i++) {
+		u64 pa;
+		if (get_user(pa, src + i) || (pa & ~PAGE_MASK) || !pfn_valid(PHYS_PFN(pa))) {
+			kvfree(d->pages);
+			kfree(d);
+			return -EINVAL;
+		}
+		d->pages[i] = pfn_to_page(PHYS_PFN(pa));
+	}
+	info.ops = &hc_db_ops;
+	info.size = a.n << PAGE_SHIFT;
+	info.flags = O_RDWR;
+	info.priv = d;
+	db = dma_buf_export(&info);
+	if (IS_ERR(db)) {
+		kvfree(d->pages);
+		kfree(d);
+		return PTR_ERR(db);
+	}
+	fd = dma_buf_fd(db, O_CLOEXEC);
+	if (fd < 0) {
+		dma_buf_put(db);
+		return fd;
+	}
+	a.fd = fd;
+	if (copy_to_user(ua, &a, sizeof(a)))
+		return -EFAULT;	/* the fd stays open in the caller; it closes it with the others */
+	return 0;
+}
+
 static long hc_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
+	if (cmd == XNU_HOSTCALL_DMABUF)
+		return hc_dmabuf((struct xnu_hostcall_dmabuf __user *)arg);
 	if (cmd == XNU_HOSTCALL_XLATE)
 		return hc_xlate((struct xnu_hostcall_xlate __user *)arg);
 	if (cmd == XNU_HOSTCALL_PIN || cmd == XNU_HOSTCALL_UNPIN)

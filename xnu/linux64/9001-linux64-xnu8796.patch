@@ -267,10 +267,18 @@ index 0000000..5d0db6d
 +
 +#endif /* _LINUX64_ABI_H_ */
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 121579c..ddc959b 100644
+index 121579c..a29ff63 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -191,6 +191,7 @@ bsd/net/dlil.c				optional networking
+@@ -106,6 +106,7 @@ bsd/dev/random/randomdev.c		standard
+ bsd/dev/memdev.c			standard
+ bsd/dev/sweet_ufs.c			standard
+ bsd/dev/bonito_gpu.c			standard
++bsd/dev/sweet_gpu_host.c		standard
+ bsd/dev/bonito_reset.c			standard
+ bsd/dev/bonito_misc.c			standard
+ bsd/dev/sweet_sample.c			standard
+@@ -191,6 +192,7 @@ bsd/net/dlil.c				optional networking
  bsd/net/ether_if_module.c		optional ether
  bsd/net/ether_inet_pr_module.c		optional ether inet
  bsd/net/ether_inet6_pr_module.c		optional ether inet
@@ -278,6 +286,54 @@ index 121579c..ddc959b 100644
  bsd/net/if_loop.c			optional loop
  bsd/net/if_mib.c			optional networking
  bsd/net/if_vlan.c			optional vlan
+diff --git a/bsd/dev/adrenod_proto.h b/bsd/dev/adrenod_proto.h
+new file mode 100644
+index 0000000..f31b91c
+--- /dev/null
++++ b/bsd/dev/adrenod_proto.h
+@@ -0,0 +1,42 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * The GPU bridge's messages (docs/GPU-BRIDGE.md): the hosted XNU (bsd/dev/sweet_gpu_host.c, through linux64_hostcall) asks adrenod, the Linux
++ * service that owns the Adreno's render node. One request, one reply; the reply's status is 0 or -errno.
++ */
++#ifndef ADRENOD_PROTO_H
++#define ADRENOD_PROTO_H
++#include <stdint.h>
++
++#define AGPU_MAGIC 0x55504741u	/* 'AGPU' */
++#define AGPU_VERSION 1
++#define AGPU_MAX_PAGES 16384	/* per MAP request (64 MiB of 4 KiB pages) */
++#define AGPU_MAX_IBS 16
++#define AGPU_WAIT_SLICE_NS 20000000ull	/* the longest a WAIT holds the calling XNU CPU */
++
++enum agpu_op {
++	AGPU_INFO = 1,		/* -> v[0] chip id, v[1] GMEM bytes, v[2] GMEM base, v[3] VA start, v[4] VA size, v[5] highest bank bit,
++				 *    v[6] UBWC swizzle, v[7] macrotile mode | uche trap base in payload (u64) */
++	AGPU_MAP = 2,		/* a0 iova, n pages; payload: n u64 physical addresses (4 KiB each) */
++	AGPU_UNMAP = 3,		/* a0 iova, a1 bytes: every mapping inside the range */
++	AGPU_SUBMIT = 4,	/* n IBs; payload: n struct agpu_ib -> v[0] fence */
++	AGPU_WAIT = 5,		/* a0 fence, a1 timeout ns (at most AGPU_WAIT_SLICE_NS) -> status -ETIMEDOUT while pending */
++	AGPU_TIMESTAMP = 6,	/* -> v[0] GPU always-on counter */
++	AGPU_FAULTS = 7,	/* -> v[0] faults of the service's queue */
++};
++
++struct agpu_ib { uint64_t iova; uint32_t dwords; uint32_t pad; };
++
++struct agpu_req {
++	uint32_t magic, op, n, pad;
++	uint64_t a0, a1, a2;
++	/* payload follows */
++};
++
++struct agpu_rep {
++	uint32_t magic;
++	int32_t status;
++	uint32_t n, pad;
++	uint64_t v[8];
++	/* payload follows */
++};
++#endif
 diff --git a/bsd/dev/memdev.c b/bsd/dev/memdev.c
 index 3e6bffa..3c26b89 100644
 --- a/bsd/dev/memdev.c
@@ -487,6 +543,345 @@ index 3e6bffa..3c26b89 100644
  
  	/* make sure (base, size) is a valid range and will not overflow */
  	assert(*size < (UINT64_MAX - *base));
+diff --git a/bsd/dev/sweet_gpu_host.c b/bsd/dev/sweet_gpu_host.c
+new file mode 100644
+index 0000000..ac9d437
+--- /dev/null
++++ b/bsd/dev/sweet_gpu_host.c
+@@ -0,0 +1,333 @@
++/*
++ * LINUX64 (bonito port): the GPU user client's backend when XNU is hosted inside Linux (docs/GPU-BRIDGE.md). SweetAccelerator calls these
++ * (its sweet_gpu_* names are mapped to sweet_gpu_host_* when SWEET_HOSTED); each asks adrenod, the Linux service that owns the Adreno's render node,
++ * through a host call. GPU memory: a pool xnu.ko reserves after XNU's RAM (/chosen "linux64-gpu-pool": physical base, size), and client pages
++ * pinned by the user client; the service imports those very pages (no copies).
++ */
++#include <pexpert/arm64/board_config.h>
++#if defined(SWEET_HOSTED)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <kern/locks.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include "adrenod_proto.h"
++
++extern long linux64_hostcall(const void *req, unsigned long len, void *reply, unsigned long max);
++
++static LCK_GRP_DECLARE(sgh_grp, "sweet_gpu_host");
++static LCK_MTX_DECLARE(sgh_call, &sgh_grp);	/* one request at a time: the buffers below are shared */
++static LCK_MTX_DECLARE(sgh_pool, &sgh_grp);
++static uint8_t sgh_req[sizeof(struct agpu_req) + AGPU_MAX_PAGES * 8];
++static uint8_t sgh_rep[sizeof(struct agpu_rep) + 64];
++
++static int sgh_state;		/* 0 not asked, 1 ready, -1 no service */
++static uint64_t sgh_info[8], sgh_trap;
++
++#define POOL_UNIT 16384ull
++#define POOL_MAX_UNITS 65536	/* 1 GiB */
++static uint64_t sgh_pool_pa, sgh_pool_units, sgh_pool_used;
++static uint8_t sgh_pool_map[POOL_MAX_UNITS / 8];
++
++/* one host call; *rep is the reply (valid until the lock is dropped) */
++static int
++sgh_call(uint32_t op, uint32_t n, uint64_t a0, uint64_t a1, const void *payload, size_t plen, struct agpu_rep **rep)
++{
++	struct agpu_req *q = (struct agpu_req *)sgh_req;
++	struct agpu_rep *r = (struct agpu_rep *)sgh_rep;
++	long len;
++
++	if (plen > sizeof(sgh_req) - sizeof(*q)) {
++		return -EINVAL;
++	}
++	*q = (struct agpu_req){ .magic = AGPU_MAGIC, .op = op, .n = n, .a0 = a0, .a1 = a1 };
++	if (plen) {
++		memcpy(q + 1, payload, plen);
++	}
++	len = linux64_hostcall(q, sizeof(*q) + plen, r, sizeof(sgh_rep));
++	if (len < 0) {
++		return (int)len;
++	}
++	if ((size_t)len < sizeof(*r) || r->magic != AGPU_MAGIC) {
++		return -EPROTO;
++	}
++	*rep = r;
++	return r->status;
++}
++
++static void
++sgh_pool_init(void)
++{
++	DTEntry chosen;
++	void const *prop = NULL;
++	unsigned size = 0;
++
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "linux64-gpu-pool", &prop, &size) != kSuccess || size != 16) {
++		printf("SWEET GPU host: no GPU pool (xnu.ko gpu_pool_mb)\n");
++		return;
++	}
++	sgh_pool_pa = ((const uint64_t *)prop)[0];
++	sgh_pool_units = ((const uint64_t *)prop)[1] / POOL_UNIT;
++	if (sgh_pool_units > POOL_MAX_UNITS) {
++		sgh_pool_units = POOL_MAX_UNITS;
++	}
++	printf("SWEET GPU host: pool %llu MB at 0x%llx\n", (sgh_pool_units * POOL_UNIT) >> 20, sgh_pool_pa);
++}
++
++bool sweet_gpu_host_ready(void);
++bool
++sweet_gpu_host_ready(void)
++{
++	struct agpu_rep *r;
++
++	lck_mtx_lock(&sgh_call);
++	if (sgh_state == 0) {
++		int err = sgh_call(AGPU_INFO, 0, 0, 0, NULL, 0, &r);
++		if (err == 0) {
++			memcpy(sgh_info, r->v, sizeof(sgh_info));
++			memcpy(&sgh_trap, r + 1, 8);
++			sgh_state = 1;
++			printf("SWEET GPU host: adrenod: chip 0x%llx, GMEM %llu KB, GPU addresses 0x%llx + 0x%llx\n", sgh_info[0], sgh_info[1] >> 10,
++			    sgh_info[3], sgh_info[4]);
++			sgh_pool_init();
++		} else {
++			printf("SWEET GPU host: no GPU service (%d)\n", err);
++			sgh_state = -1;
++		}
++	}
++	lck_mtx_unlock(&sgh_call);
++	return sgh_state == 1 && sgh_pool_units != 0;
++}
++
++int sweet_gpu_host_window_alloc(uint64_t *base, uint64_t *size);
++int
++sweet_gpu_host_window_alloc(uint64_t *base, uint64_t *size)
++{
++	if (!sweet_gpu_host_ready()) {
++		return ENODEV;
++	}
++	*base = sgh_info[3];
++	*size = sgh_info[4];
++	return 0;
++}
++
++void sweet_gpu_host_window_free(uint64_t base);
++void
++sweet_gpu_host_window_free(uint64_t base __unused)
++{
++}
++
++int sweet_gpu_host_pool_alloc(uint64_t bytes, uint64_t *pa);
++int
++sweet_gpu_host_pool_alloc(uint64_t bytes, uint64_t *pa)
++{
++	uint64_t n = (bytes + POOL_UNIT - 1) / POOL_UNIT, run = 0;
++	int found = -1;
++
++	if (n == 0 || !sweet_gpu_host_ready()) {
++		return ENOMEM;
++	}
++	lck_mtx_lock(&sgh_pool);
++	for (uint64_t i = 0; i < sgh_pool_units; i++) {
++		if (sgh_pool_map[i / 8] & (1 << (i % 8))) {
++			run = 0;
++			continue;
++		}
++		if (++run == n) {
++			found = (int)(i + 1 - n);
++			break;
++		}
++	}
++	if (found >= 0) {
++		for (uint64_t i = (uint64_t)found; i < (uint64_t)found + n; i++) {
++			sgh_pool_map[i / 8] |= (uint8_t)(1 << (i % 8));
++		}
++		sgh_pool_used += n;
++		*pa = sgh_pool_pa + (uint64_t)found * POOL_UNIT;
++	}
++	lck_mtx_unlock(&sgh_pool);
++	return found >= 0 ? 0 : ENOMEM;
++}
++
++void sweet_gpu_host_pool_free(uint64_t pa, uint64_t bytes);
++void
++sweet_gpu_host_pool_free(uint64_t pa, uint64_t bytes)
++{
++	uint64_t first = (pa - sgh_pool_pa) / POOL_UNIT, n = (bytes + POOL_UNIT - 1) / POOL_UNIT;
++
++	lck_mtx_lock(&sgh_pool);
++	for (uint64_t i = first; i < first + n && i < sgh_pool_units; i++) {
++		sgh_pool_map[i / 8] &= (uint8_t)~(1 << (i % 8));
++	}
++	sgh_pool_used -= n;
++	lck_mtx_unlock(&sgh_pool);
++}
++
++uint64_t sweet_gpu_host_pool_avail(void);
++uint64_t
++sweet_gpu_host_pool_avail(void)
++{
++	return (sgh_pool_units - sgh_pool_used) * POOL_UNIT;
++}
++
++int sweet_gpu_host_map_at(uint64_t iova, const uint64_t *pages, uint32_t npages);
++int
++sweet_gpu_host_map_at(uint64_t iova, const uint64_t *pages, uint32_t npages)
++{
++	struct agpu_rep *r;
++	int err;
++
++	if (npages == 0 || npages > AGPU_MAX_PAGES) {
++		return EINVAL;
++	}
++	lck_mtx_lock(&sgh_call);
++	err = sgh_call(AGPU_MAP, npages, iova, 0, pages, (size_t)npages * 8, &r);
++	lck_mtx_unlock(&sgh_call);
++	if (err) {
++		printf("SWEET GPU host: map %u pages at 0x%llx: %d\n", npages, iova, err);
++	}
++	return err ? EIO : 0;
++}
++
++void sweet_gpu_host_unmap_at(uint64_t iova, uint64_t len);
++void
++sweet_gpu_host_unmap_at(uint64_t iova, uint64_t len)
++{
++	struct agpu_rep *r;
++
++	lck_mtx_lock(&sgh_call);
++	(void)sgh_call(AGPU_UNMAP, 0, iova, len, NULL, 0, &r);
++	lck_mtx_unlock(&sgh_call);
++}
++
++uint32_t sweet_gpu_host_submit_v2(const uint64_t *iova, const uint32_t *dwords, unsigned n, bool *busy);
++uint32_t
++sweet_gpu_host_submit_v2(const uint64_t *iova, const uint32_t *dwords, unsigned n, bool *busy)
++{
++	struct agpu_ib ib[AGPU_MAX_IBS];
++	struct agpu_rep *r;
++	uint32_t fence = 0;
++	int err;
++
++	*busy = false;
++	if (n == 0 || n > AGPU_MAX_IBS) {
++		return 0;
++	}
++	for (unsigned i = 0; i < n; i++) {
++		ib[i] = (struct agpu_ib){ .iova = iova[i], .dwords = dwords[i] };
++	}
++	lck_mtx_lock(&sgh_call);
++	err = sgh_call(AGPU_SUBMIT, n, 0, 0, ib, n * sizeof(ib[0]), &r);
++	if (err == 0) {
++		fence = (uint32_t)r->v[0];
++	}
++	lck_mtx_unlock(&sgh_call);
++	if (err) {
++		static unsigned told;
++		if (told++ < 8) {
++			printf("SWEET GPU host: submit of %u IBs (first 0x%llx): %d\n", n, iova[0], err);
++		}
++		*busy = err == -EBUSY || err == -EAGAIN;
++	}
++	return fence;
++}
++
++int sweet_gpu_host_wait_fence_ns(uint32_t fence, uint64_t timeout_ns);
++int
++sweet_gpu_host_wait_fence_ns(uint32_t fence, uint64_t timeout_ns)
++{
++	struct agpu_rep *r;
++	uint64_t waited = 0;
++
++	for (;;) {
++		uint64_t slice = timeout_ns - waited < AGPU_WAIT_SLICE_NS ? timeout_ns - waited : AGPU_WAIT_SLICE_NS;
++		lck_mtx_lock(&sgh_call);
++		int err = sgh_call(AGPU_WAIT, 0, fence, slice, NULL, 0, &r);
++		lck_mtx_unlock(&sgh_call);
++		if (err == 0) {
++			return 0;
++		}
++		if (err != -ETIMEDOUT || waited + slice >= timeout_ns) {
++			return ETIMEDOUT;
++		}
++		waited += slice;
++	}
++}
++
++int sweet_gpu_host_wait_fence(uint32_t fence, uint32_t timeout_ms);
++int
++sweet_gpu_host_wait_fence(uint32_t fence, uint32_t timeout_ms)
++{
++	return sweet_gpu_host_wait_fence_ns(fence, (uint64_t)timeout_ms * 1000000ull);
++}
++
++uint64_t sweet_gpu_host_timestamp(void);
++uint64_t
++sweet_gpu_host_timestamp(void)
++{
++	struct agpu_rep *r;
++	uint64_t t = 0;
++
++	lck_mtx_lock(&sgh_call);
++	if (sgh_call(AGPU_TIMESTAMP, 0, 0, 0, NULL, 0, &r) == 0) {
++		t = r->v[0];
++	}
++	lck_mtx_unlock(&sgh_call);
++	return t;
++}
++
++uint64_t sweet_gpu_host_recoveries(void);
++uint64_t
++sweet_gpu_host_recoveries(void)
++{
++	struct agpu_rep *r;
++	uint64_t f = 0;
++
++	lck_mtx_lock(&sgh_call);
++	if (sgh_call(AGPU_FAULTS, 0, 0, 0, NULL, 0, &r) == 0) {
++		f = r->v[0];
++	}
++	lck_mtx_unlock(&sgh_call);
++	return f;
++}
++
++bool sweet_gpu_host_lost(uint64_t *epoch, uint32_t last_fence);
++bool
++sweet_gpu_host_lost(uint64_t *epoch, uint32_t last_fence __unused)
++{
++	uint64_t f = sweet_gpu_host_recoveries();
++
++	if (f != *epoch) {
++		*epoch = f;
++		return true;
++	}
++	return false;
++}
++
++/* the direct port's first ABI (sweetmtl=1); not served when hosted */
++int sweet_gpu_host_map_user(uint64_t *iova_out, const uint64_t *pages, uint32_t npages, uint32_t page_size);
++int
++sweet_gpu_host_map_user(uint64_t *iova_out __unused, const uint64_t *pages __unused, uint32_t npages __unused, uint32_t page_size __unused)
++{
++	return ENOTSUP;
++}
++void sweet_gpu_host_unmap_user(uint64_t iova, uint64_t len);
++void
++sweet_gpu_host_unmap_user(uint64_t iova __unused, uint64_t len __unused)
++{
++}
++int sweet_gpu_host_submit_user(uint64_t ib_iova, uint32_t dwords, uint32_t timeout_ms, uint32_t *fence_out);
++int
++sweet_gpu_host_submit_user(uint64_t ib_iova __unused, uint32_t dwords __unused, uint32_t timeout_ms __unused, uint32_t *fence_out __unused)
++{
++	return ENOTSUP;
++}
++uint32_t sweet_gpu_host_submit_user_async(uint64_t ib_iova, uint32_t dwords);
++uint32_t
++sweet_gpu_host_submit_user_async(uint64_t ib_iova __unused, uint32_t dwords __unused)
++{
++	return 0;
++}
++#endif /* SWEET_HOSTED */
 diff --git a/bsd/dev/sweet_pmem.c b/bsd/dev/sweet_pmem.c
 index d405964..3033246 100644
 --- a/bsd/dev/sweet_pmem.c
@@ -886,6 +1281,39 @@ index 7a32a23..776fcbe 100644
  	panic("Unable to find driver for this platform: \"%s\".",
  	    platform_name);
  
+diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
+index 7fb6243..e786647 100644
+--- a/iokit/Kernel/arm/SweetAccelerator.cpp
++++ b/iokit/Kernel/arm/SweetAccelerator.cpp
+@@ -35,6 +35,28 @@
+  * (EL0 dc civac: SCTLR_EL1.UCI is set). Submits take up to 16 IBs (msm's a6xx_submit wrapping).
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <pexpert/arm64/board_config.h>
++#if defined(SWEET_HOSTED)
++/* LINUX64: the GPU is Linux's: the backend is the GPU bridge (bsd/dev/sweet_gpu_host.c, docs/GPU-BRIDGE.md) */
++#define sweet_gpu_ready sweet_gpu_host_ready
++#define sweet_gpu_map_user sweet_gpu_host_map_user
++#define sweet_gpu_unmap_user sweet_gpu_host_unmap_user
++#define sweet_gpu_submit_user sweet_gpu_host_submit_user
++#define sweet_gpu_submit_user_async sweet_gpu_host_submit_user_async
++#define sweet_gpu_wait_fence sweet_gpu_host_wait_fence
++#define sweet_gpu_window_alloc sweet_gpu_host_window_alloc
++#define sweet_gpu_window_free sweet_gpu_host_window_free
++#define sweet_gpu_map_at sweet_gpu_host_map_at
++#define sweet_gpu_unmap_at sweet_gpu_host_unmap_at
++#define sweet_gpu_submit_v2 sweet_gpu_host_submit_v2
++#define sweet_gpu_wait_fence_ns sweet_gpu_host_wait_fence_ns
++#define sweet_gpu_lost sweet_gpu_host_lost
++#define sweet_gpu_recoveries sweet_gpu_host_recoveries
++#define sweet_gpu_timestamp sweet_gpu_host_timestamp
++#define sweet_gpu_pool_alloc sweet_gpu_host_pool_alloc
++#define sweet_gpu_pool_avail sweet_gpu_host_pool_avail
++#define sweet_gpu_pool_free sweet_gpu_host_pool_free
++#endif
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOUserClient.h>
 diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 index 2545cf9..9a9f5de 100644
 --- a/iokit/Kernel/arm/SweetCPU.cpp
