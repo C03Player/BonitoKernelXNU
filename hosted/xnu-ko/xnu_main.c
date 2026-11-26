@@ -931,15 +931,14 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 	adt_prop_str(&a, "device_type", "linux64-io");
 	{ u64_t ranges[3] = { 0, 0x7000000000ULL, 0x10000000ULL }; adt_prop(&a, "ranges", ranges, sizeof(ranges)); }
 	if (FB_SIZE) {
-		/*
-		 * /arm-io/gpu, compatible "paravirtualizedgraphics,gpu" as on Apple's VM: IOMobileFramebuffer.framework then waits
-		 * for the framebuffers of the AppleParavirtGPU services (XnuDisplay; it matches IOResources, not this node, which
-		 * no driver claims: /arm-io's device_type keeps Apple's ARM IO driver off). Without the node WindowServer counted
-		 * no framebuffer and ran headless.
-		 */
-		adt_node(&a, 2, 0);
-		adt_prop_str(&a, "name", "gpu");
-		adt_prop_str(&a, "compatible", "paravirtualizedgraphics,gpu");
+		/* /arm-io/disp0: the built-in display iOS looks for (IOMobileFramebuffer counts these children; the framebuffer itself is boot_args Video) */
+		adt_node(&a, 6, 0);
+		adt_prop_str(&a, "name", "disp0");
+		adt_prop_u32(&a, "AAPL,phandle", 0x100);
+		adt_prop_str(&a, "device_type", "display-subsystem");
+		adt_prop_str(&a, "compatible", "sweet,display");
+		adt_prop_u32(&a, "canvas-width", (unsigned)fb_width);
+		adt_prop_u32(&a, "canvas-height", (unsigned)fb_height);
 	}
 	if (a.err) { logs("xnu: ADT overflow"); return 0; }
 	u64_t dt_len = adt_size(&a);

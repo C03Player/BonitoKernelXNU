@@ -886,6 +886,38 @@ index 7a32a23..776fcbe 100644
  	panic("Unable to find driver for this platform: \"%s\".",
  	    platform_name);
  
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 58b5644..377bb52 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -34,6 +34,7 @@
+  * the GUI by default: boot-arg sweetfb_noconsole=1 stops drawing it from
+  * the first swap on (it still reaches the persistent log; panics draw).
+  */
++#include <pexpert/arm64/board_config.h>
+ #include "SweetSurface.h"
+ #include "SweetDisplayMask.h"
+ 
+@@ -424,12 +425,19 @@ AppleCLCD::start(IOService *provider)
+ 	{
+ 		uint32_t kick = 0;
+ 		PE_parse_boot_argn("sweetfb_kick", &kick, sizeof(kick));
++#if !defined(SWEET_HOSTED)
+ 		if (kick != 0) {
+ 			sweet_fb_kick_init();
+ 		}
++#endif
+ 		uint32_t probe = 0;
+ 		PE_parse_boot_argn("sweetfb_probe", &probe, sizeof(probe));
+ 		PE_parse_boot_argn("sweetfb_sync", &sweet_fb_sync_start, sizeof(sweet_fb_sync_start));
++#if defined(SWEET_HOSTED)
++		kick = 0;		/* LINUX64: the display controller is the host's; the host shows this framebuffer */
++		probe = 0;
++		sweet_fb_sync_start = 0;
++#endif
+ 		if (probe != 0 || sweet_fb_sync_start != 0) {
+ 			sweet_fb_probe_init();
+ 		}
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
 index 5d6b4e5..41c9a42 100644
 --- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
@@ -932,6 +964,31 @@ index 5d6b4e5..41c9a42 100644
  }
  
  const char *
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index c5e2d5c..f31bc4a 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -25,6 +25,7 @@
+  * Values, notifications, accelerators and shared events are accepted and
+  * ignored (logged once per selector).
+  */
++#include <pexpert/arm64/board_config.h>
+ #include "SweetSurface.h"
+ 
+ #if defined(SWEET)
+@@ -271,7 +272,12 @@ sweet_surface_create_physical(uint64_t phys, uint32_t width, uint32_t height,
+ 	s->pixelFormat = pixelFormat;
+ 	s->allocSize = (uint32_t)round_page(bytesPerRow * height);
+ 	s->memory = IOMemoryDescriptor::withPhysicalAddress(phys, s->allocSize, kIODirectionInOut);
++#if defined(SWEET_HOSTED)
++	/* LINUX64: this "panel" is RAM the host reads through its cached mapping (and copies to the real display): map it cacheable too */
++	s->mapCache = kIOMapCopybackCache;
++#else
+ 	s->mapCache = kIOMapWriteCombineCache;
++#endif
+ 	if (s->memory == NULL || !sweet_surface_publish(s)) {
+ 		s->release();
+ 		return NULL;
 diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
 index e6c74aa..52f25ee 100644
 --- a/iokit/bsddev/IOKitBSDInit.cpp

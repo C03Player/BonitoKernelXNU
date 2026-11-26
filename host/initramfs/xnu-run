@@ -9,6 +9,10 @@ grep -q '^fki ' /proc/modules || insmod /hosted/fki.ko || exit 1
 D=${XNU_DISK-/dev/mmcblk0p72}
 [ -n "$D" ] && [ "$(dd if="$D" bs=1 skip=1024 count=2 2>/dev/null)" != "H+" ] && [ "$(dd if="$D" bs=1 skip=1024 count=2 2>/dev/null)" != "HX" ] && { echo "$D has no HFS+ volume"; D=; }
 # boot-args the direct port's userland needs (bonito/tools/mkios.sh), without its hardware ones
-A="keepsyms=1 serial=0 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
-setsid insmod /hosted/xnu.ko image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=1 ram_mb=1536 ${D:+hostdisk=$D} bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+A="keepsyms=1 serial=0 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
+# the hosted display: a framebuffer in XNU's memory, copied to the host's fb0 (the text console lets go of it first)
+for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" $v/name 2>/dev/null && echo 0 > $v/bind; done
+F=
+[ -c /dev/fb0 ] && F="fb_width=1080 fb_height=2160 fb_dump=/dev/fb0 fb_dump_ms=100"
+setsid insmod /hosted/xnu.ko $F image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=1 ram_mb=1536 ${D:+hostdisk=$D} bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
 echo started
