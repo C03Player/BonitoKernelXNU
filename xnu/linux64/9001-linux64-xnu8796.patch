@@ -2991,6 +2991,38 @@ index 2449334..f05d461 100644
  	POP_FRAME
  	ARM64_STACK_EPILOG
  
+diff --git a/osfmk/arm64/proc_reg.h b/osfmk/arm64/proc_reg.h
+index 6fe6afb..9ba9ab4 100644
+--- a/osfmk/arm64/proc_reg.h
++++ b/osfmk/arm64/proc_reg.h
+@@ -1129,6 +1129,27 @@
+ #define CACHE_ATTRINDX_POSTED_COMBINED_REORDERED 0x7 /* no cache, write gathering, reorderable access, posted writes (device memory) */
+ #define CACHE_ATTRINDX_DEFAULT                   CACHE_ATTRINDX_WRITEBACK
+ 
++#if defined(SWEET_HOSTED)
++/*
++ * LINUX64: hosted XNU is entered at arm_init and runs on Linux's MAIR_EL1, which it must not change (start.s, which loads XNU's table, does
++ * not run). The indices name Linux's slots instead (arch/arm64: 0 normal, 1 normal tagged = write-back too, 2 normal non-cacheable,
++ * 3 device nGnRnE, 4 device nGnRE; 5-7 are nGnRnE). With XNU's own numbers every write-combined mapping was cacheable, so the GPU read
++ * stale memory.
++ */
++#undef  CACHE_ATTRINDX_WRITECOMB
++#undef  CACHE_ATTRINDX_WRITETHRU
++#undef  CACHE_ATTRINDX_INNERWRITEBACK
++#undef  CACHE_ATTRINDX_POSTED
++#undef  CACHE_ATTRINDX_POSTED_REORDERED
++#undef  CACHE_ATTRINDX_POSTED_COMBINED_REORDERED
++#define CACHE_ATTRINDX_WRITECOMB                 0x2
++#define CACHE_ATTRINDX_WRITETHRU                 0x1
++#define CACHE_ATTRINDX_INNERWRITEBACK            0x1
++#define CACHE_ATTRINDX_POSTED                    0x4
++#define CACHE_ATTRINDX_POSTED_REORDERED          0x4
++#define CACHE_ATTRINDX_POSTED_COMBINED_REORDERED 0x4
++#endif
++
+ 
+ /*
+  * Access protection bit values (TTEs and PTEs), stage 1
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 index 55e609a..8e79c32 100644
 --- a/osfmk/arm64/sleh.c

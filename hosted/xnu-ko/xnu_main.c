@@ -1333,6 +1333,20 @@ static int run_m2b(void)
 	gpu_pool_size = (u64_t)gpu_pool_mb << 20;
 	gpu_pool_pa = img.region.pa + img.region.size - gpu_pool_size;
 	if (gpu_pool_size) logkv("xnu: GPU pool at phys", gpu_pool_pa);
+	/*
+	 * The GPU reads the pool from RAM without snooping the CPUs' caches, and XNU maps it uncached. Linux's cacheable alias of this memory
+	 * may still hold dirty lines from its own use of it: written back later, they would overwrite what XNU put there. Clean and invalidate
+	 * the whole pool once through that alias, before XNU runs.
+	 */
+	if (gpu_pool_size && img.region.va) {
+		char *p = (char *)img.region.va + img.region.size - gpu_pool_size, *end = p + gpu_pool_size;
+		for (; p < end; p += 64)
+			__asm__ volatile("dc civac, %0" : : "r"(p) : "memory");
+		__asm__ volatile("dsb sy" : : : "memory");
+		logs("xnu: GPU pool cleaned from the CPU caches");
+	} else if (gpu_pool_size) {
+		logs("xnu: GPU pool has no Linux mapping: not cleaned from the CPU caches");
+	}
 	struct boot_args_v2 *ba = build_boot(base, img.region.pa, img.region.size - gpu_pool_size, image_off, image_size);
 	if (!ba) return -22;
 	return enter_arm_init(ba);
