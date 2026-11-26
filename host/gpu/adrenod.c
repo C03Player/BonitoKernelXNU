@@ -219,8 +219,9 @@ int main(int argc, char **argv)
 {
 	const char *node = "/dev/dri/renderD128";
 	for (int a = 1; a < argc; a++) {
-		if (!strcmp(argv[a], "-v"))
-			verbose++;
+		if (argv[a][0] == '-' && argv[a][1] == 'v')
+			for (const char *c = argv[a] + 1; *c == 'v'; c++)
+				verbose++;
 		else
 			node = argv[a];
 	}

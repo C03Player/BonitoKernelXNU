@@ -1310,7 +1310,7 @@ index 7a32a23..776fcbe 100644
  	    platform_name);
  
 diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
-index 7fb6243..e786647 100644
+index 7fb6243..491457b 100644
 --- a/iokit/Kernel/arm/SweetAccelerator.cpp
 +++ b/iokit/Kernel/arm/SweetAccelerator.cpp
 @@ -35,6 +35,28 @@
@@ -1342,6 +1342,45 @@ index 7fb6243..e786647 100644
  #include <IOKit/IOService.h>
  #include <IOKit/IOLib.h>
  #include <IOKit/IOUserClient.h>
+@@ -156,6 +178,7 @@ class SweetAcceleratorUserClient : public IOUserClient {
+ 
+ 	int addMemory(IOMemoryDescriptor *md, uint64_t *handle, uint64_t *va);
+ 	IOReturn v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize);
++	IOReturn v2MethodBody(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize);
+ 	SweetV2BO *v2Find(uint64_t handle);
+ 	IOReturn v2NewSlot(IOMemoryDescriptor *md, uint64_t bytes, bool imported, uint64_t *handle);
+ 	void v2Release(SweetV2BO *bo);
+@@ -639,8 +662,30 @@ SweetAcceleratorUserClient::v2Release(SweetV2BO *bo)
+ 	bzero(bo, sizeof(*bo));
+ }
+ 
++#if defined(SWEET_HOSTED)
++/* LINUX64: every failed request is logged (GPU bridge bring-up: what made Turnip declare the device lost) */
+ IOReturn
+ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
++{
++	IOReturn r = v2MethodBody(method, in, inSize, out, outSize);
++	if (r != kIOReturnSuccess && !(method == NativeAdrenoMethodWaitFence && r == kIOReturnTimeout)) {
++		static unsigned told;
++		if (told++ < 200) {
++			IOLog("SWEET MTL: v2 %s method %u -> 0x%x\n", fName, method, r);
++		}
++	}
++	return r;
++}
++#else
++IOReturn
++SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
++{
++	return v2MethodBody(method, in, inSize, out, outSize);
++}
++#endif
++
++IOReturn
++SweetAcceleratorUserClient::v2MethodBody(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
+ {
+ 	static uint32_t logged;
+ #define V2_IN(T)        if (in == NULL || inSize != sizeof(T)) return kIOReturnBadArgument; const T *rq = (const T *)in
 diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 index 2545cf9..9a9f5de 100644
 --- a/iokit/Kernel/arm/SweetCPU.cpp
