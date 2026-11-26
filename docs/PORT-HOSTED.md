@@ -14,7 +14,7 @@
 ## Resolved (2026-11-26)
 `xnu/linux64/9001-linux64-xnu8796.patch` = xnulinux `cf3399e` patches **0001, 0006, 0007** on our tree, every rejected hunk adapted by `xnu/linux64/port-edits.py`
 (32 files; machine flag `-mcpu=cortex-a55+crypto` on the BCM2837 base config). Left out on purpose, to be revisited:
-- 0002 host devices (needed before any disk, display or input), 0003 boot without iBoot, 0004 macOS 27 system calls, 0005 paravirtual ticket locks, 0008 replacement corecrypto.
+- (0002 host devices was added after the fifth phone test.) 0003 boot without iBoot, 0004 macOS 27 system calls, 0005 paravirtual ticket locks, 0008 replacement corecrypto.
 - 47-bit user address space and the macOS page-size changes: iOS user addresses fit the stock 39-bit, 4 KB-granule attributes; xnu-8796 already picks 16 KB VM pages above 1 GB of RAM.
 - Build base: **the `SWEET` machine config** (it carries the iOS userland support: HFS, pthread, AES, plain `arm64`), with `SWEET_HOSTED` in `SWEET.h`: 4 KB pages, no early framebuffer,
   eMMC log or reset paths. The first try on the `BCM2837` config (run 45844052472) built as arm64e and lacked that support.
@@ -33,6 +33,9 @@ Kernel layout of the hosted build: link address `0xfffffff007004000` (not large 
 - The mainline tree has no watchdog node for SDM670: `host/mkboot.sh` adds the APSS watchdog to its copy of the dtb (verified: `/dev/watchdog` appears and is fed).
 
 - hosted4: VM system initialised (129011 free pages); panic `kmem_range_init ... claim zones`: macOS zone reservation (128 GiB) larger than the 39-bit layout. Fix: iOS sizes.
+
+- **hosted5: the whole Mach bootstrap runs** (VM, zones, scheduler, threads, startup phase 15) and enters IOKit (`PE_init_iokit`); fault in `IONVRAMCHRPHandler::unserializeVariables`
+  (blank NVRAM). Fix: apply xnulinux patch 0002 (host devices; also the generic platform expert for an unknown platform).
 
 ## Next
 1. CI: `gh workflow run xnu.yml -f hosted=true`; fix compile and link errors (artifact `xnu-log`).
