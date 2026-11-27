@@ -21,6 +21,14 @@ Why the view starts 320 points wide was not traced.
 Fix: one instruction, so that only a change of height reloads. Verified in Search and Safari: letters, "123", digits, "#+=", "ABC", emoji
 and back, all in place. Not verified: rotation, other keyboard types, a height change.
 
+## Stale text (2026-11-27)
+
+Rows of lists showed other rows' text, a label showed the clock. iOS frees memory and gets the same address with other pages while the
+Metal runtime still holds a GPU import of that address, and the runtime reused it. The call to that lookup in
+`SweetMetal2` (a binary of the root disk, not the shared cache) becomes `mov x0, #0`. The patch is written for the plugin build on the
+phone (21,603,472 bytes), which is newer than the one in the local disk image: `host/iospatches.py` says how to get such a file and its
+device offsets.
+
 ## Finding such a fault
 
 No debugger runs on the hosted iOS, but its code can be changed in RAM while it runs, and the kernel log reports every user crash with the

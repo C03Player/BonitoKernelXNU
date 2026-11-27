@@ -45,6 +45,11 @@ a submit's end, so `adrenod` now puts a colour/depth cache flush and a wait betw
 asked the direct port's GPU driver, so they now use the host GPU's fences (`sweet_gpu_host_latest_fence`, `_fence_done`). After both, one
 screenshot tour showed no such rectangles; one faint line on a just-woken lock screen is unexplained.
 
+**Solved 2026-11-27 (stale text).** The cause below is fixed at its source: our Metal plugin's runtime handed out an existing GPU import
+again when memory was asked for at the same address and length. That one call is patched out at boot (`host/iospatches.py`,
+docs/IOS-PATCHES.md), so every such buffer is imported anew. `host/uistale.py` on one boot of the phone: 6 of 14 rounds wrong before the
+patch, 0 and 0 of 14 after it (patched in RAM). About 1150 mappings stay live instead of 740. The history follows.
+
 Open: after scrolling a list, some rows show wrong content (also seen by the user: the Accessibility label showing the clock): another row's text ("Safari" beside the Sounds icon) or garbled glyphs.
 `host/uistale.py` reproduces it (Settings at the top: scroll down, back, compare; blocks that differ beyond a 1 pixel settle offset; earlier
 "14 of 14" counts included that offset).

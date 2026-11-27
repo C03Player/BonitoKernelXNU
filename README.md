@@ -37,7 +37,6 @@ What does not work, or is not there:
 - Changes made in iOS are saved in a separate area on the phone (docs/STORAGE.md). Whether Wi-Fi passwords survive a reboot is untested.
 - The phone has to be started from a computer. Nothing is installed on it.
 - Sound, the cameras, Bluetooth and the mobile network.
-- After scrolling a list, some rows can keep the text of another row.
 - The Photos widget stays black, and several iOS background services crash repeatedly.
 
 The notes on each part are in [docs/GPU-BRIDGE.md](docs/GPU-BRIDGE.md) and [docs/NETWORK.md](docs/NETWORK.md).

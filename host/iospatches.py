@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""The patches to iOS's own code that the hosted system needs, and the list host/iospatch.c applies: iospatches.py DSC_DIR OUT [ROOT_IMAGE]
+"""The patches to iOS's code that the hosted system needs, and the list host/iospatch.c applies: iospatches.py DSC_DIR OUT [ROOT_IMAGE]
 
 DSC_DIR: the dyld shared cache of the iOS on the phone (local only: Apple's code is never committed, the list is generated for each image).
 ROOT_IMAGE: a copy of the root disk, to tell the phone where to look (optional; found once and kept in OUT.hint).
 
-A changed page no longer matches its hash in the cache file's code signature, and a process that touches such a page loses its code
+Patches to other binaries of the root disk (FILE_PATCHES) use a local copy in work/host/ios-files, read out of ROOT_IMAGE when missing.
+The phone's copy can be newer than the image's (the direct port installed builds on the phone): then take the phone's file (mount a
+read-only mapping of the volume's 33554432 sectors with -t hfsplus) and put the device offsets iospatch reports into OUT.hint.
+
+A changed page no longer matches its hash in the file's code signature, and a process that touches such a page loses its code
 signature's validity (SpringBoard then aborts in the privacy checks). So the hash in the signature is replaced as well; the hosted kernel's
 AMFI accepts the changed signature.
 """
-import hashlib, mmap, os, struct, sys
+import hashlib, mmap, os, struct, subprocess, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../bonito/tools'))
 from dsc import DSC
@@ -22,6 +26,43 @@ PATCHES = [
 ]
 
 
+FILE_PATCHES = [
+    # (file on the root disk, file offset, original instruction, replacement, why)
+    # The Metal runtime of our plugin hands out an existing import again when memory is asked for at the same address and length. iOS frees
+    # that memory and gets the address again with other pages while the old import lives: the GPU then read the old pages (rows of lists
+    # showing other text, the clock in place of a label). "bl <find the live import>" becomes "mov x0, #0": always import anew.
+    ('/System/Library/Extensions/SweetMetal2.bundle/SweetMetal2', 0x1504d4, 0x940a002b, 0xd2800000, 'stale text: no reuse of GPU imports'),
+]
+
+
+def local_copy(name, image, folder):
+    """the local copy of a file of the root disk, read out of the image the first time"""
+    path = os.path.join(folder, os.path.basename(name))
+    if not os.path.exists(path):
+        if not (image and os.path.exists(image)):
+            sys.exit('%s: no local copy, and no root image to read it from' % path)
+        os.makedirs(folder, exist_ok=True)
+        reader = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../bonito/tools/hfsx.py')
+        subprocess.run([sys.executable, reader, image, 'cat', name, path], check=True, stdout=subprocess.DEVNULL)
+    return path
+
+
+def on_disk(image, name, offset):
+    """where byte `offset` of the root disk's file `name` is on the disk, or -1"""
+    if not (image and os.path.exists(image)):
+        return -1
+    from hfsx import HFS, FileSource
+    volume = HFS(FileSource(image))
+    _, ident, record = volume.lookup(name)
+    position = 0
+    for start, count in volume._all_extents(record[88:168], ident)[1]:
+        length = count * volume.bs
+        if offset < position + length:
+            return start * volume.bs + offset - position
+        position += length
+    return -1
+
+
 def locate(cache, va):
     """(cache file, offset in it) of an address"""
     for a, size, offset, path in cache.maps:
@@ -31,10 +72,23 @@ def locate(cache, va):
 
 
 def page_hash(path, offset):
-    """(file offset of the code directory's hash of the page holding offset, page offset, page size)"""
+    """(file offset of the code directory's hash of the page holding offset, page offset, bytes the hash covers) of a shared cache file or a
+    thin 64-bit Mach-O file"""
     with open(path, 'rb') as f:
         header = f.read(0x40)
-        start, size = struct.unpack_from('<QQ', header, 0x28)
+        if header[:4] == b'\xcf\xfa\xed\xfe':	# Mach-O: the signature is named by its LC_CODE_SIGNATURE command
+            count, total = struct.unpack_from('<II', header, 16)
+            f.seek(32)
+            commands, at, start = f.read(total), 0, 0
+            for _ in range(count):
+                command, length = struct.unpack_from('<II', commands, at)
+                if command == 0x1d:
+                    start, size = struct.unpack_from('<II', commands, at + 8)
+                at += length
+            if not start:
+                sys.exit('%s: not signed' % path)
+        else:
+            start, size = struct.unpack_from('<QQ', header, 0x28)
         f.seek(start)
         blob = f.read(size)
     count = struct.unpack_from('>I', blob, 8)[0]
@@ -47,7 +101,9 @@ def page_hash(path, offset):
         length, kind, _, shift = struct.unpack_from('>4B', blob, at + 36)
         if kind != 2 or length != 32:
             sys.exit('%s: a code directory that is not SHA-256' % path)
-        found.append((start + at + hashes + (offset >> shift) * length, offset >> shift << shift, 1 << shift))
+        limit = struct.unpack_from('>I', blob, at + 32)[0]
+        page = offset >> shift << shift
+        found.append((start + at + hashes + (offset >> shift) * length, page, min(1 << shift, limit - page)))
     if len(found) != 1:
         sys.exit('%s: %d code directories, one expected' % (path, len(found)))
     return found[0]
@@ -61,25 +117,37 @@ def main():
     if os.path.exists(out + '.hint'):
         hints = dict((k, int(v, 0)) for k, v in (l.split() for l in open(out + '.hint')))
 
-    def search(sig):
+    def search(sig, scan=True):
         key = sig.hex()
-        if key not in hints and image and os.path.exists(image):
+        if key not in hints and scan and image and os.path.exists(image):
             with open(image, 'rb') as f:
                 hints[key] = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ).find(sig)
         return hints.get(key, -1)
 
-    lines = []
-    pages = {}	# (file, hash offset) -> (page offset, page size, [(offset, replacement)], offset and hint of one instruction)
+    targets = []	# (file with the bytes, offset in it, original instruction, replacement, why)
     for va, old, new, why in PATCHES:
-        sig = cache.read(va - 12, 24)
-        if struct.unpack_from('<I', sig, 12)[0] != old:
-            sys.exit('%s: 0x%x holds another instruction: not the iOS this patch was written for' % (why, va))
         path, offset = locate(cache, va)
-        hint = search(sig)
+        targets.append((path, offset, old, new, why, None))
+    for name, offset, old, new, why in FILE_PATCHES:
+        targets.append((local_copy(name, image, os.path.join(os.path.dirname(os.path.abspath(out)), 'ios-files')), offset, old, new, why, name))
+
+    lines = []
+    pages = {}	# (file, hash offset) -> (page offset, bytes hashed, [(offset, replacement)], offset and hint of one instruction)
+    for path, offset, old, new, why, name in targets:
+        with open(path, 'rb') as f:
+            f.seek(offset - 12)
+            sig = f.read(24)
+        if struct.unpack_from('<I', sig, 12)[0] != old:
+            sys.exit('%s: %s holds another instruction at 0x%x: not the file this patch was written for' % (why, path, offset))
+        if name and sig.hex() not in hints:
+            found = on_disk(image, name, offset - 12)
+            if found >= 0 and os.pread(os.open(image, os.O_RDONLY), len(sig), found) == sig:
+                hints[sig.hex()] = found
+        hint = search(sig, scan=not name)	# a file newer than the image's is not in the image: no point looking
         lines.append('%d %s 12 %s\n' % (hint, sig.hex(), struct.pack('<I', new).hex()))
         entry, page, size = page_hash(path, offset)
-        pages.setdefault((path, entry), (page, size, [], offset - 12, hint))[2].append((offset, struct.pack('<I', new)))
-    for (path, entry), (page, size, changes, near, near_hint) in pages.items():
+        pages.setdefault((path, entry), (page, size, [], offset - 12, hint, name))[2].append((offset, struct.pack('<I', new)))
+    for (path, entry), (page, size, changes, near, near_hint, name) in pages.items():
         with open(path, 'rb') as f:
             f.seek(page)
             data = bytearray(f.read(size))
@@ -96,8 +164,8 @@ def main():
                 f.seek(hint)
                 if f.read(32) != old:
                     hint = -1
-        if hint < 0:
-            hint = search(old)
+        if hint < 0 or old.hex() in hints:
+            hint = search(old, scan=not name)
         lines.append('%d %s 0 %s\n' % (hint, old.hex(), hashlib.sha256(data).hexdigest()))
     open(out, 'w').writelines(lines)
     open(out + '.hint', 'w').writelines('%s %d\n' % kv for kv in hints.items() if kv[1] >= 0)
