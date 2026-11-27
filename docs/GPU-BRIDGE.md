@@ -45,18 +45,30 @@ a submit's end, so `adrenod` now puts a colour/depth cache flush and a wait betw
 asked the direct port's GPU driver, so they now use the host GPU's fences (`sweet_gpu_host_latest_fence`, `_fence_done`). After both, one
 screenshot tour showed no such rectangles; one faint line on a just-woken lock screen is unexplained.
 
-Open: after scrolling a list, some rows keep another row's text (Settings: "Emergency SO" beside the Airplane Mode icon). Reproduced in
-14 of 14 rounds by `host/uistale.py` (Settings at the top: scroll down, back, compare). The Metal plugin cleans the CPU caches for the
-surfaces and no-copy buffers of each command buffer, and an extra GPU cache invalidate in `adrenod` changed nothing (14 of 14), so neither
-cache explains it by itself. Further tries (boot-args write the plugin's switch files):
+Open: after scrolling a list, some rows show wrong content: another row's text ("Safari" beside the Sounds icon) or garbled glyphs.
+`host/uistale.py` reproduces it (Settings at the top: scroll down, back, compare; blocks that differ beyond a 1 pixel settle offset; earlier
+"14 of 14" counts included that offset).
 
-| try | result |
-|---|---|
-| `sweetgpuclean=1`: kernel cleans every imported buffer before each submit | 12 of 12 rounds differ; wrong pieces are parts of other labels (`Not Connectec`, `lar Calendar`) |
-| `sweetfullarea=1`: no partial render areas | 10 of 10 rounds differ |
-| `sweetnoworker=1`: translation on the caller's thread | invalid: a GPU fault early in the run (CP read, address with its upper bits gone), then `DeviceLost`; the screen froze |
+**Cause (checked by the kernel, 2026-11-27):** a buffer the Metal runtime imported from backboardd's memory keeps the pages it had at the
+import, while the same address later maps other pages. Boot-arg `sweetgpuremap=0` logs it (`import 0x... no longer at its pages`), about
+once per submit at first. The runtime looks live imports up by address, so new content reaches new pages and the GPU samples the old ones.
 
-Next: how the plugin tracks surfaces whose content changed (needs a rebuilt iOS-side plugin). Do not use `sweetnoworker=1`.
+| try | rounds with wrong content | note |
+|---|---|---|
+| fence waits fixed (below) | 5 of 14 | |
+| `sweettudebug=noubwc` | 7 of 14 | |
+| `sweettudebug=flushall,syncdraw` | 3 of 14 | |
+| `sweettudebug=sysmem` | 8 of 14 | |
+| `sweetgpuremap=0` (check only) | 4 of 14 | mismatches logged |
+| `sweetgpuremap=1` (import again) | not measurable | 4 of 4 runs: backboardd stops swapping within seconds, no GPU fault, other GPU clients go on |
+| `sweetgpuclean=1`, `sweetfullarea=1` | wrong content seen | kernel cleans imports before each submit; no partial render areas |
+| `sweetnoworker=1` | invalid | GPU fault, then `DeviceLost`: the screen froze |
+
+Next: find why the compositor stops after a re-import (its threads' state is not visible from Linux), or make the runtime drop an import when
+its memory is released (needs a rebuilt iOS-side plugin, `bonito/userland/phone/metal2`). Open too: why the pages differ at all (a write pin
+of a copy-on-write range could make its own pages).
+
+Fixed on the way: the XNU side compared the service's `-ETIMEDOUT` (Linux, 110) with XNU's (60), so every fence wait gave up after 20 ms.
 
 Open: the Photos widget is black.
 
