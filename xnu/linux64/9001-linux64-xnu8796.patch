@@ -136,10 +136,10 @@ index 0000000..aeb3087
 +#endif /* _LINUX64_LINUX64_H_ */
 diff --git a/EXTERNAL_HEADERS/linux64/linux64_abi.h b/EXTERNAL_HEADERS/linux64/linux64_abi.h
 new file mode 100644
-index 0000000..5d0db6d
+index 0000000..94b50ae
 --- /dev/null
 +++ b/EXTERNAL_HEADERS/linux64/linux64_abi.h
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,128 @@
 +// SPDX-License-Identifier: APSL-2.0
 +/*
 + * Copyright (c) 2026 xnulinux contributors. All rights reserved.
@@ -179,6 +179,8 @@ index 0000000..5d0db6d
 +	LINUX64_CALL_KEYSTORE_RW    = 819,	/* a1 = struct linux64_rw_req on the keystore file */
 +	LINUX64_CALL_DISK_RW        = 820,	/* a1 = struct linux64_rw_req on the system disk */
 +	LINUX64_CALL_DISK_SIZE      = 821,	/* a1 = u64 *: the system disk's size in bytes, 0 when there is none */
++	LINUX64_CALL_SVC_SEND       = 823,	/* a1 = struct linux64_buf_req: bytes for the host service's stream (svc_out) */
++	LINUX64_CALL_SVC_RECV       = 824,	/* a1 = struct linux64_buf_req: new bytes of the service's stream (svc_in) */
 +	LINUX64_CALL_RANDOM         = 822,	/* a1 = buffer, a2 = length: bytes from the host's cryptographic generator */
 +	LINUX64_CALL_HOSTCALL       = 830,	/* a1 = struct linux64_hostcall_req: a message to a Linux service and its reply */
 +	LINUX64_CALL_CPU_START      = 840,	/* a1 = a CPU's MPIDR, a2 = its cpu_data_t: the host enters linux64_cpu_entry(a2) there */
@@ -267,7 +269,7 @@ index 0000000..5d0db6d
 +
 +#endif /* _LINUX64_ABI_H_ */
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 121579c..bc6d4fa 100644
+index 121579c..4c8f8a3 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
 @@ -106,6 +106,7 @@ bsd/dev/random/randomdev.c		standard
@@ -278,15 +280,16 @@ index 121579c..bc6d4fa 100644
  bsd/dev/bonito_reset.c			standard
  bsd/dev/bonito_misc.c			standard
  bsd/dev/sweet_sample.c			standard
-@@ -124,6 +125,7 @@ bsd/dev/redwood_net.c		standard
+@@ -124,6 +125,8 @@ bsd/dev/redwood_net.c		standard
  bsd/dev/redwood_apple80211.c	standard
  bsd/dev/flame_sta.c		standard
  bsd/dev/flame_wlan.c		standard
 +bsd/dev/linux64_net_link.c	standard
++bsd/dev/linux64_wifi.c		standard
  bsd/dev/mem.c				standard
  bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
-@@ -191,6 +193,7 @@ bsd/net/dlil.c				optional networking
+@@ -191,6 +194,7 @@ bsd/net/dlil.c				optional networking
  bsd/net/ether_if_module.c		optional ether
  bsd/net/ether_inet_pr_module.c		optional ether inet
  bsd/net/ether_inet6_pr_module.c		optional ether inet
@@ -344,10 +347,10 @@ index 0000000..f31b91c
 +#endif
 diff --git a/bsd/dev/linux64_net_link.c b/bsd/dev/linux64_net_link.c
 new file mode 100644
-index 0000000..833cbe6
+index 0000000..8993fa8
 --- /dev/null
 +++ b/bsd/dev/linux64_net_link.c
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,79 @@
 +/*
 + * LINUX64: en0 over the host's xnu0 (fki.ko's virtual Ethernet device): Linux owns the radio, gives DHCP and DNS on xnu0 and NATs
 + * (docs/NETWORK.md). The interface is bsd/dev/redwood_net.c's; this is its link driver. Boot-arg linux64net=1.
@@ -391,7 +394,7 @@ index 0000000..833cbe6
 +	return n;
 +}
 +
-+static const struct redwood_net_link l64_link = {
++static struct redwood_net_link l64_link = {
 +	.name = "the host's xnu0",
 +	.address = { 0x02, 0x00, 0x5e, 0x77, 0xee, 0x10 },
 +	.wireless = false,
@@ -409,10 +412,346 @@ index 0000000..833cbe6
 +	uint32_t on = 0;
 +
 +	if (PE_parse_boot_argn("linux64net", &on, sizeof(on)) && on) {
-+		redwood_net_attach(&l64_link);
++		uint32_t wifi = 0;
++
++		/* boot-arg linux64wifi=1: en0 is a radio whose link comes up when iOS has joined a network (linux64_wifi.c) */
++		if (PE_parse_boot_argn("linux64wifi", &wifi, sizeof(wifi)) && wifi) {
++			extern void linux64_wifi_attach(const uint8_t *address);
++			l64_link.wireless = true;
++			l64_link.up = false;
++			if (redwood_net_attach(&l64_link)) {
++				linux64_wifi_attach(l64_link.address);
++			}
++		} else {
++			redwood_net_attach(&l64_link);
++		}
 +		/* configd's interface namer waits for it before it configures any interface (the direct port starts it from its radio) */
 +		MiniIONetworkStackStart();
 +	}
++#endif
++}
+diff --git a/bsd/dev/linux64_wifi.c b/bsd/dev/linux64_wifi.c
+new file mode 100644
+index 0000000..acc7e1d
+--- /dev/null
++++ b/bsd/dev/linux64_wifi.c
+@@ -0,0 +1,318 @@
++/*
++ * LINUX64: iOS's Wi-Fi over the Linux host's radio (boot-arg linux64wifi=1). This is the station side of sys/redwood_sta.h: wifid's
++ * Apple80211 requests (redwood_apple80211.c) become text lines for the host service (host/initramfs/wifihost), which scans and joins with
++ * wpa_supplicant; frames go over en0 and the host's xnu0 (linux64_net_link.c), where Linux NATs them onto its own Wi-Fi.
++ *
++ * To the host:  "scan" | "join <ssid hex> <open|pass|pmk> <key hex or ->" | "leave" | "power <0|1>"
++ * From it:      "bss <bssid hex> <MHz> <dBm> <beacon interval> <capability> <ssid hex> <elements hex or ->" ... "scandone <errno>"
++ *               "joined <errno> <bssid hex or ->" | "left"
++ * All calls come from the station's one thread, except state(), which only copies.
++ */
++#include <pexpert/arm64/board_config.h>
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <kern/clock.h>
++#include <kern/kalloc.h>
++#include <kern/locks.h>
++#include <libkern/libkern.h>
++#include <sys/redwood_net.h>
++#include <sys/redwood_sta.h>
++
++#if defined(SWEET_HOSTED)
++extern long linux64_svc_send(const void *buffer, unsigned long length);
++extern long linux64_svc_recv(void *buffer, unsigned long size);
++
++#define WL_MOST         64
++#define WL_LINE         2600
++
++static LCK_GRP_DECLARE(wl_grp, "linux64-wifi");
++static LCK_MTX_DECLARE(wl_lock, &wl_grp);       /* the joined state, read by state() */
++static struct redwood_sta_bss *wl_bss;          /* WL_MOST of the last scan */
++static unsigned wl_count;
++static struct redwood_sta_bss wl_joined;
++static bool wl_is_joined;
++static int wl_error;
++static char wl_line[WL_LINE], wl_buf[512];
++static unsigned wl_have, wl_used;
++
++static void
++wl_send(const char *line)
++{
++	linux64_svc_send(line, strlen(line));
++}
++
++/* the next line from the host into wl_line, or false after `ms` without one */
++static bool
++wl_next(unsigned ms)
++{
++	unsigned n = 0, waited = 0;
++
++	for (;;) {
++		while (wl_used < wl_have) {
++			char c = wl_buf[wl_used++];
++			if (c == '\n') {
++				wl_line[n] = 0;
++				return true;
++			}
++			if (n < WL_LINE - 1) {
++				wl_line[n++] = c;
++			}
++		}
++		long got = linux64_svc_recv(wl_buf, sizeof(wl_buf));
++		wl_used = 0;
++		wl_have = got > 0 ? (unsigned)got : 0;
++		if (wl_have == 0) {
++			if (waited >= ms) {
++				return false;
++			}
++			delay_for_interval(50, NSEC_PER_MSEC);
++			waited += 50;
++		}
++	}
++}
++
++/* the next word of a line (words are separated by one space): NULL at its end */
++static char *
++wl_word(char **rest)
++{
++	char *w = *rest, *e;
++
++	if (w == NULL || *w == 0) {
++		return NULL;
++	}
++	for (e = w; *e != 0 && *e != ' '; e++) {
++	}
++	*rest = *e ? e + 1 : e;
++	*e = 0;
++	return w;
++}
++
++static int
++wl_nibble(char c)
++{
++	return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
++}
++
++/* hex into at most `most` bytes: how many */
++static unsigned
++wl_unhex(const char *s, uint8_t *out, unsigned most)
++{
++	unsigned n = 0;
++
++	while (s != NULL && n < most && wl_nibble(s[0]) >= 0 && wl_nibble(s[1]) >= 0) {
++		out[n++] = (uint8_t)(wl_nibble(s[0]) << 4 | wl_nibble(s[1]));
++		s += 2;
++	}
++	return n;
++}
++
++static void
++wl_hex(char *out, const uint8_t *in, unsigned n)
++{
++	static const char d[] = "0123456789abcdef";
++
++	for (unsigned i = 0; i < n; i++) {
++		out[2 * i] = d[in[i] >> 4];
++		out[2 * i + 1] = d[in[i] & 15];
++	}
++	out[2 * n] = 0;
++}
++
++static long
++wl_number(const char *s)
++{
++	long v = 0;
++	bool minus = s != NULL && *s == '-';
++
++	for (s = s ? s + minus : ""; *s >= '0' && *s <= '9'; s++) {
++		v = v * 10 + (*s - '0');
++	}
++	return minus ? -v : v;
++}
++
++static int
++wl_power(bool on)
++{
++	wl_send(on ? "power 1\n" : "power 0\n");
++	if (!on) {
++		lck_mtx_lock(&wl_lock);
++		wl_is_joined = false;
++		lck_mtx_unlock(&wl_lock);
++		redwood_net_link_state(false);
++	}
++	return 0;
++}
++
++static int
++wl_scan(__unused const struct redwood_sta_scan *what)
++{
++	while (wl_next(0)) {                    /* what an earlier request left behind */
++	}
++	wl_count = 0;
++	wl_send("scan\n");
++	while (wl_next(15000)) {
++		char *rest = wl_line, *w = wl_word(&rest);
++
++		if (w == NULL) {
++			continue;
++		}
++		if (strcmp(w, "scandone") == 0) {
++			printf("linux64 wifi: scan: %u networks\n", wl_count);
++			return (int)wl_number(wl_word(&rest));
++		}
++		if (strcmp(w, "bss") != 0 || wl_count >= WL_MOST) {
++			continue;
++		}
++		struct redwood_sta_bss *b = &wl_bss[wl_count];
++		bzero(b, sizeof(*b));
++		wl_unhex(wl_word(&rest), b->bssid, 6);
++		b->frequency = (uint16_t)wl_number(wl_word(&rest));
++		b->rssi = (int16_t)wl_number(wl_word(&rest));
++		b->beacon_interval = (uint16_t)wl_number(wl_word(&rest));
++		b->capability = (uint16_t)wl_number(wl_word(&rest));
++		b->ssid_length = (uint8_t)wl_unhex(wl_word(&rest), b->ssid, sizeof(b->ssid));
++		b->elements_length = (uint16_t)wl_unhex(wl_word(&rest), b->elements, sizeof(b->elements));
++		if (b->ssid_length != 0) {
++			wl_count++;
++		}
++	}
++	return ETIMEDOUT;
++}
++
++static void
++wl_heard(void (*each)(const struct redwood_sta_bss *bss, void *context), void *context)
++{
++	for (unsigned i = 0; i < wl_count; i++) {
++		each(&wl_bss[i], context);
++	}
++}
++
++static int
++wl_join(const struct redwood_sta_join *what)
++{
++	static char line[300], ssid[65], key[131];
++	const char *kind = "open";
++	int error = ETIMEDOUT;
++	uint8_t bssid[6] = { 0 };
++
++	wl_hex(ssid, what->ssid, MIN(what->ssid_length, 32));
++	key[0] = '-';
++	key[1] = 0;
++	if (what->security == REDWOOD_STA_WPA2_PSK && what->passphrase_length != 0) {
++		kind = "pass";
++		wl_hex(key, what->passphrase, MIN(what->passphrase_length, 63));
++	} else if (what->security == REDWOOD_STA_WPA2_PSK) {
++		kind = "pmk";
++		wl_hex(key, what->pmk, 32);
++	}
++	lck_mtx_lock(&wl_lock);
++	wl_is_joined = false;
++	lck_mtx_unlock(&wl_lock);
++	redwood_net_link_state(false);
++	while (wl_next(0)) {
++	}
++	snprintf(line, sizeof(line), "join %s %s %s\n", ssid, kind, key);
++	wl_send(line);
++	bzero(line, sizeof(line));
++	bzero(key, sizeof(key));
++	while (wl_next(40000)) {
++		char *rest = wl_line, *w = wl_word(&rest);
++
++		if (w != NULL && strcmp(w, "joined") == 0) {
++			error = (int)wl_number(wl_word(&rest));
++			wl_unhex(wl_word(&rest), bssid, 6);
++			break;
++		}
++	}
++	wl_error = error;
++	printf("linux64 wifi: join -> %d\n", error);
++	if (error != 0) {
++		return error;
++	}
++	lck_mtx_lock(&wl_lock);
++	bzero(&wl_joined, sizeof(wl_joined));
++	for (unsigned i = 0; i < wl_count; i++) {
++		if (wl_bss[i].ssid_length == what->ssid_length && memcmp(wl_bss[i].ssid, what->ssid, what->ssid_length) == 0) {
++			wl_joined = wl_bss[i];
++			break;
++		}
++	}
++	memcpy(wl_joined.ssid, what->ssid, MIN(what->ssid_length, 32));
++	wl_joined.ssid_length = what->ssid_length;
++	memcpy(wl_joined.bssid, bssid, 6);
++	wl_is_joined = true;
++	lck_mtx_unlock(&wl_lock);
++	redwood_net_link_state(true);
++	return 0;
++}
++
++static int
++wl_leave(void)
++{
++	lck_mtx_lock(&wl_lock);
++	wl_is_joined = false;
++	lck_mtx_unlock(&wl_lock);
++	redwood_net_link_state(false);
++	wl_send("leave\n");
++	return 0;
++}
++
++static void
++wl_state(struct redwood_sta_state *state)
++{
++	bzero(state, sizeof(*state));
++	lck_mtx_lock(&wl_lock);
++	state->phase = wl_is_joined ? REDWOOD_STA_JOINED : REDWOOD_STA_IDLE;
++	if (wl_is_joined) {
++		state->bss = wl_joined;
++	}
++	state->last_error = wl_error;
++	lck_mtx_unlock(&wl_lock);
++}
++
++static unsigned
++wl_channels(struct redwood_sta_channel *channels, unsigned most)
++{
++	static const uint16_t freqs[] = {
++		2412, 2417, 2422, 2427, 2432, 2437, 2442, 2447, 2452, 2457, 2462, 2467, 2472,
++		5180, 5200, 5220, 5240, 5260, 5280, 5300, 5320, 5500, 5520, 5540, 5560, 5580, 5600, 5620, 5640, 5660, 5680, 5700,
++		5745, 5765, 5785, 5805, 5825,
++	};
++	unsigned n = 0;
++
++	for (; n < most && n < sizeof(freqs) / sizeof(freqs[0]); n++) {
++		channels[n].frequency = freqs[n];
++		channels[n].flags = REDWOOD_STA_CHANNEL_PASSIVE;
++	}
++	return n;
++}
++
++static struct redwood_sta_ops wl_ops = {
++	.power = wl_power,
++	.scan = wl_scan,
++	.heard = wl_heard,
++	.join = wl_join,
++	.leave = wl_leave,
++	.state = wl_state,
++	.channels = wl_channels,
++};
++#endif /* SWEET_HOSTED */
++
++/* after en0 exists: put iOS's Wi-Fi side on it */
++void linux64_wifi_attach(const uint8_t *address);
++void
++linux64_wifi_attach(const uint8_t *address)
++{
++#if defined(SWEET_HOSTED)
++	wl_bss = kalloc_data(WL_MOST * sizeof(*wl_bss), Z_WAITOK | Z_ZERO);
++	if (wl_bss == NULL) {
++		return;
++	}
++	memcpy(wl_ops.address, address, 6);
++	redwood_sta_attach(&wl_ops);
++	printf("linux64 wifi: iOS's Wi-Fi is the host's\n");
++#else
++	(void)address;
 +#endif
 +}
 diff --git a/bsd/dev/memdev.c b/bsd/dev/memdev.c
@@ -1115,10 +1454,10 @@ index bb2a2bf..bb2dd78 100644
  
 diff --git a/bsd/kern/linux64_host.c b/bsd/kern/linux64_host.c
 new file mode 100644
-index 0000000..00cb495
+index 0000000..30c1063
 --- /dev/null
 +++ b/bsd/kern/linux64_host.c
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,151 @@
 +/*
 + * Copyright (c) 2026 xnulinux contributors. All rights reserved.
 + *
@@ -1170,6 +1509,33 @@ index 0000000..00cb495
 +		return 0;
 +	}
 +	linux64_call(LINUX64_CALL_NET_RECV, &q);
++	return q.result > 0 ? q.result : 0;
++}
++
++/* Bytes to the host service's stream, and what it has appended to ours: the bytes moved. */
++long linux64_svc_send(const void *buffer, unsigned long length);
++long
++linux64_svc_send(const void *buffer, unsigned long length)
++{
++	struct linux64_buf_req q = { .buf = (void *)(uintptr_t)buffer, .len = length, .result = 0 };
++
++	if (linux64_hook == 0) {
++		return 0;
++	}
++	linux64_call(LINUX64_CALL_SVC_SEND, &q);
++	return q.result > 0 ? q.result : 0;
++}
++
++long linux64_svc_recv(void *buffer, unsigned long size);
++long
++linux64_svc_recv(void *buffer, unsigned long size)
++{
++	struct linux64_buf_req q = { .buf = buffer, .len = size, .result = 0 };
++
++	if (linux64_hook == 0) {
++		return 0;
++	}
++	linux64_call(LINUX64_CALL_SVC_RECV, &q);
 +	return q.result > 0 ? q.result : 0;
 +}
 +

@@ -114,6 +114,11 @@ static void *ci_file; static fki_u64 ci_off;
  * Input events for XnuInput (kexts/XnuInput): a host file of 8-byte records {u16 type, u16 code, s32 value} as Linux's evdev
  * (tools/hosted/xnu-input.py appends them); LINUX64_CALL_INPUT_READ reads the whole records written since the load.
  */
+/* a byte stream to and from a host service (host/wifihost.sh): XNU appends to svc_out and reads what is appended to svc_in */
+static char *svc_out, *svc_in;
+module_param(svc_out, charp, 0444);
+module_param(svc_in, charp, 0444);
+static void *so_file, *si_file; static fki_u64 so_off, si_off;
 static char *input_in;
 module_param(input_in, charp, 0444);
 static char *keystore;		/* the hosted keystore's file (XnuEAN's EAN blobs): read and written through LINUX64_CALL_KEYSTORE_RW */
@@ -554,6 +559,18 @@ static long xnu_hook_body(unsigned long call, unsigned long a1, unsigned long a2
 		if (ci_file) {
 			long n = fki_file_rw(ci_file, 0, q->buf, (unsigned long)q->len, ci_off);
 			if (n > 0) { ci_off += n; q->result = n; }
+		}
+		return 0;
+	}
+	if (call == LINUX64_CALL_SVC_SEND || call == LINUX64_CALL_SVC_RECV) {	/* the host service's byte streams */
+		struct linux64_buf_req *q = (struct linux64_buf_req *)a1;
+		int send = call == LINUX64_CALL_SVC_SEND;
+		void *f = send ? so_file : si_file;
+		if (!q) return 0;
+		q->result = 0;
+		if (f && q->len) {
+			long n = fki_file_rw(f, send, q->buf, (unsigned long)q->len, send ? so_off : si_off);
+			if (n > 0) { if (send) so_off += n; else si_off += n; q->result = n; }
 		}
 		return 0;
 	}
@@ -1388,6 +1405,14 @@ static int __init xnu_init(void)
 		fb_file = fki_file_open(fb_dump, 1, 0);
 		if (!fb_file) logs("xnu: cannot open fb_dump (create the file first)");
 	}
+	if (svc_out && svc_in) {
+		fki_u64 sz = 0;
+		so_file = fki_file_open(svc_out, 1, &sz);
+		so_off = sz;
+		si_file = fki_file_open(svc_in, 0, &sz);
+		si_off = sz;
+		if (!so_file || !si_file) logs("xnu: cannot open svc_out and svc_in");
+	}
 	if (console_in) {
 		fki_u64 sz = 0;
 		ci_file = fki_file_open(console_in, 0, &sz);
@@ -1453,6 +1478,8 @@ static void __exit xnu_exit(void)
 	if (dk_file) fki_file_close(dk_file);
 	if (ci_file) fki_file_close(ci_file);
 	if (in_file) fki_file_close(in_file);
+	if (so_file) fki_file_close(so_file);
+	if (si_file) fki_file_close(si_file);
 }
 
 module_init(xnu_init);

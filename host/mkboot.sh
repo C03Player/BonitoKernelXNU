@@ -42,6 +42,8 @@ if [ -d "$WU/root" ] && [ -f "$MF/wlanmdsp.mbn" ]; then
 	install -m755 host/initramfs/wifi-join "$R/bin/wifi-join"
 	install -m755 host/initramfs/udhcpc.sh "$R/etc/udhcpc.sh"
 	install -m755 host/initramfs/xnu-net "$R/bin/xnu-net"
+	install -m755 host/initramfs/wifihost "$R/bin/wifihost"
+	cp "$WU/root/sbin/wpa_cli" "$R/bin/"
 	cp "$WU/root/usr/sbin/dnsmasq" "$WU/root/usr/sbin/nft" "$R/bin/"
 	L=$R/lib/aarch64-linux-gnu
 	mkdir -p "$L" "$R/lib/firmware/ath10k/WCN3990/hw1.0"

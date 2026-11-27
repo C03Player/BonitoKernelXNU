@@ -1,0 +1,104 @@
+#!/bin/sh
+# wifihost OUT IN: the host side of iOS's Wi-Fi (xnu bsd/dev/linux64_wifi.c, docs/NETWORK.md). Reads XNU's requests from OUT, appends the
+# answers to IN. Scans and joins with wpa_supplicant on wlan0 (started by wifi-up); passwords stay in RAM.
+# WIFIHOST_FAKE=1: no radio, two made-up networks ("BonitoTest" open, "BonitoWPA" with the password "password123"), for testing iOS's side.
+OUT=$1
+IN=$2
+cli() { wpa_cli -p /tmp/wpa -i wlan0 "$@" 2>/dev/null; }
+say() { echo "$*" >> "$IN"; }
+hexs() { printf '%s' "$1" | od -An -tx1 | tr -d ' \n'; }
+unhex() { printf '%b' "$(echo "$1" | sed 's/\(..\)/\\x\1/g')"; }
+
+radio() {	# the radio and the supplicant, once
+	[ -e /sys/class/net/wlan0 ] || wifi-up > /tmp/wifi-up.log 2>&1 || return 1
+	if ! pidof wpa_supplicant > /dev/null; then
+		printf 'ctrl_interface=/tmp/wpa\n' > /tmp/wpa.conf
+		wpa_supplicant -B -D nl80211 -i wlan0 -c /tmp/wpa.conf -f /tmp/wpa.log || return 1
+		sleep 1
+	fi
+}
+
+ssid_of() {	# the SSID element (id 0) of a list of information elements in hex
+	ie=$1
+	while [ ${#ie} -ge 4 ]; do
+		len=$((0x$(echo "$ie" | cut -c3-4) * 2))
+		if [ "$(echo "$ie" | cut -c1-2)" = 00 ]; then
+			[ $len -gt 0 ] && echo "$ie" | cut -c5-$((4 + len))
+			return
+		fi
+		ie=$(echo "$ie" | cut -c$((5 + len))-)
+	done
+}
+
+scan() {
+	if [ -n "$WIFIHOST_FAKE" ]; then
+		for n in "020000000001 BonitoTest 1025 -" "020000000002 BonitoWPA 1041 30140100000fac040100000fac040100000fac020000"; do
+			set -- $n
+			s=$(hexs "$2")
+			ie=00$(printf '%02x' ${#2})${s}010882848b960c121824030106
+			[ "$4" = - ] || ie=$ie$4
+			say "bss $1 2437 -50 100 $3 $s $ie"
+		done
+		say "scandone 0"
+		return
+	fi
+	radio || { say "scandone 5"; return; }
+	cli scan > /dev/null
+	sleep 4
+	i=0
+	while [ $i -lt 64 ]; do
+		b=$(cli bss $i)
+		bssid=$(echo "$b" | sed -n 's/^bssid=//p' | tr -d :)
+		[ -n "$bssid" ] || break
+		freq=$(echo "$b" | sed -n 's/^freq=//p')
+		level=$(echo "$b" | sed -n 's/^level=//p')
+		int=$(echo "$b" | sed -n 's/^beacon_int=//p')
+		cap=$(($(echo "$b" | sed -n 's/^capabilities=//p')))
+		ie=$(echo "$b" | sed -n 's/^ie=//p' | cut -c1-2048)
+		ssid=$(ssid_of "$ie")
+		[ -n "$ssid" ] && say "bss $bssid $freq $level $int $cap $ssid $ie"
+		i=$((i + 1))
+	done
+	say "scandone 0"
+}
+
+join() {	# ssid-hex open|pass|pmk key-hex
+	if [ -n "$WIFIHOST_FAKE" ]; then
+		sleep 1
+		if [ "$2" = open ] || [ "$(unhex "$3")" = password123 ]; then say "joined 0 020000000001"; else say "joined 80 -"; fi
+		return
+	fi
+	radio || { say "joined 5 -"; return; }
+	cli remove_network all > /dev/null
+	id=$(cli add_network | tail -n 1)
+	cli set_network "$id" ssid "$1" > /dev/null
+	case "$2" in
+	open) cli set_network "$id" key_mgmt NONE > /dev/null ;;
+	pass) cli set_network "$id" psk "\"$(unhex "$3")\"" > /dev/null ;;
+	pmk) cli set_network "$id" psk "$3" > /dev/null ;;
+	esac
+	cli select_network "$id" > /dev/null
+	n=0
+	while [ $n -lt 25 ]; do
+		st=$(cli status)
+		if echo "$st" | grep -q '^wpa_state=COMPLETED'; then
+			udhcpc -i wlan0 -n -q -t 8 -T 2 -s /etc/udhcpc.sh > /tmp/udhcpc.log 2>&1 || { say "joined 60 -"; return; }
+			say "joined 0 $(echo "$st" | sed -n 's/^bssid=//p' | tr -d :)"
+			return
+		fi
+		sleep 1
+		n=$((n + 1))
+	done
+	cli remove_network all > /dev/null
+	say "joined 80 -"
+}
+
+tail -n +1 -f "$OUT" | while read -r cmd a b c; do
+	echo "request: $cmd"	# (never the arguments: they hold passwords)
+	case "$cmd" in
+	scan) scan ;;
+	join) join "$a" "$b" "$c" ;;
+	leave) [ -n "$WIFIHOST_FAKE" ] || cli remove_network all > /dev/null; say left ;;
+	power) ;;
+	esac
+done

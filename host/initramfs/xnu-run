@@ -34,6 +34,16 @@ fi
 # the network: en0 on the host's xnu0 (xnu-net gives it DHCP, DNS and NAT). XNU_NET=0 leaves it out.
 NET=
 [ "${XNU_NET:-1}" = 1 ] && command -v xnu-net > /dev/null && NET="linux64net=1"
+# XNU_WIFI=1: en0 is iOS's Wi-Fi: Settings lists the networks the host's radio hears and joins them (wifihost). =fake: made-up networks.
+SVC=
+if [ -n "$NET" ] && [ -n "$XNU_WIFI" ]; then
+	NET="$NET linux64wifi=1"
+	: > /tmp/xnusvc.out; : > /tmp/xnusvc.in
+	SVC="svc_out=/tmp/xnusvc.out svc_in=/tmp/xnusvc.in"
+	F_WIFI=
+	[ "$XNU_WIFI" = fake ] && F_WIFI=1
+	WIFIHOST_FAKE=$F_WIFI setsid wifihost /tmp/xnusvc.out /tmp/xnusvc.in > /tmp/wifihost.log 2>&1 < /dev/null &
+fi
 # touch and buttons: Linux's input events, relayed into a file xnu.ko reads
 : > /tmp/xnuinput
 pidof evrelay > /dev/null || setsid evrelay /tmp/xnuinput > /tmp/evrelay.log 2>&1 < /dev/null &
@@ -58,6 +68,6 @@ fi
 A="${FBARGS:+$FBARGS }$A"
 # XNU_BOOTARGS first: the first occurrence of a boot-arg counts
 A="${XNU_BOOTARGS:+$XNU_BOOTARGS }$A"
-setsid insmod /hosted/xnu.ko $F $G input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=1536 monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+setsid insmod /hosted/xnu.ko $F $G $SVC input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=1536 monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
 [ -n "$FBARGS" ] && { pidof kmsfb > /dev/null || setsid kmsfb > /tmp/kmsfb.log 2>&1 < /dev/null & }
 echo started
