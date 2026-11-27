@@ -17,7 +17,8 @@ and `wlanmdsp.mbn`, `bdwlan-bonito.bin` from the phone's vendor image in `$MODEM
 
 Open: the MAC address is random at each boot.
 
-The USB link to the PC is 172.31.254.0/30 (phone .2). It was 192.168.7.0/24 until a real network with those addresses was joined
+The USB link to the PC is 172.31.254.0/30 (phone .2), and the root shell (telnet) and web server of the host listen there only: until
+2026-11-27 they were open to every device of a joined Wi-Fi network. It was 192.168.7.0/24 until a real network with those addresses was joined
 (2026-11-27): the route to its router and name server then pointed down the cable, so no name resolved. The clock must be right as well:
 the init script sets it after loading the modules, whose PMIC clock driver otherwise leaves it in 1970.
 
@@ -52,3 +53,18 @@ A password typed on the phone passes through RAM files on the host (`/tmp/xnusvc
 is typed again after every boot.
 
 Debugging: `XNU_BOOTARGS="net_names=1 net_trace=60 sweetiolog=configd"`; with `hfsplus` the host can mount the live iOS volume read-only.
+
+## Web pages draw with blank blocks (open, 2026-11-27)
+
+Safari loads pages, but parts stay black or white. Reproduced without internet: put pages in a directory, build with `TESTWWW=DIR
+host/mkboot.sh ...`, start iOS with `XNU_WIFI= xnu-run && xnu-net`, add `192.168.77.1 pages.test` to the host's `/etc/hosts` before
+`xnu-net`, run `httpd -p 192.168.77.1:80 -h /www/t`, and open `pages.test` in Safari.
+
+- Plain page content draws. Some composited layers (`transform: translateZ(0)`, a scrolling box) are black or white; others of the same
+  style draw. On one boot the same layers failed on every reload (full-width layers 70 and 90 points high failed, 60, 80, 100 and 120 drew).
+  Later in a long run whole test pages came up white.
+- Same blocks with the screen declared sRGB instead of P3 (all web surfaces then BGRA), so the 10-bit formats are not the cause.
+- `sweetargs=MobileSafari,WebKit2GPUProcessForDOMRendering,NO` changed nothing; whether Safari read it was not checked.
+- No crash of a WebKit process and no GPU fault were logged.
+- Guess, not shown: the stale imports of docs/GPU-BRIDGE.md. `sweetgpuremap=0` logs only the first 32 moved imports, all used up by
+  backboardd before a page is open; the next step is a kernel that logs them for web surfaces too.

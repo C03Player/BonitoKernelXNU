@@ -65,6 +65,8 @@ if [ -d "$WU/root" ] && [ -f "$MF/wlanmdsp.mbn" ]; then
 	mkdir -p "$F/sdm670/sargo"
 	cp "$MF/wlanmdsp.mbn" "$F/sdm670/sargo/"
 fi
+# test pages (TESTWWW=directory) at /www/t; to show them to iOS only: httpd -p 192.168.77.1:80 -h /www
+[ -n "${TESTWWW:-}" ] && mkdir -p "$R/www" && cp -r "$TESTWWW" "$R/www/t"
 # GPU test userland (host/gpu-userland.py), when it has been assembled
 [ -d $W/gpu ] && cp -a $W/gpu "$R/gpu"
 # hosted XNU: the two modules (built in hosted/) and the kernel image (HOSTED_KERNEL=path of kernel.development.sweet from a hosted CI run)

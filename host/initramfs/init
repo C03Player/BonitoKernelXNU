@@ -49,8 +49,9 @@ ifconfig usb0 172.31.254.2 netmask 255.255.255.252 up
 
 # servers first: a report step that hangs must not hide the machine
 dmesg > /www/dmesg.txt
-telnetd -l /bin/sh
-httpd -h /www
+# on the cable only: both are open to whoever reaches them (a root shell without a password), and the phone joins real Wi-Fi networks
+telnetd -b 172.31.254.2 -l /bin/sh
+httpd -p 172.31.254.2:80 -h /www
 report > /www/report.txt 2>&1 &
 # boot-arg xnuauto (host/boot-ios.sh): straight into iOS, nothing to type
 if grep -qw xnuauto /proc/cmdline && command -v xnu-run > /dev/null; then
