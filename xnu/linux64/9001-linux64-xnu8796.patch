@@ -2097,7 +2097,7 @@ index 2545cf9..9a9f5de 100644
  	uint64_t mpidr = topology->cpus[logical].phys_id;
  	unsigned int aff0 = mpidr & 0xff;
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 58b5644..d13c19f 100644
+index 58b5644..c897da0 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -34,6 +34,7 @@
@@ -2120,7 +2120,24 @@ index 58b5644..d13c19f 100644
  bool sweet_gpu_fb_ready(void);          /* the Pixel 4 composites with the GPU; bonito keeps the CPU path (bsd/dev/bonito_gpu.c) */
  int sweet_gpu_surface_slot(uint64_t key);
  int sweet_gpu_map_surface(uint64_t key, const uint64_t *pages, uint32_t npages, uint32_t page_size);
-@@ -424,12 +430,19 @@ AppleCLCD::start(IOService *provider)
+@@ -401,6 +407,16 @@ AppleCLCD::start(IOService *provider)
+ 	fClientSurface = (gpu && fRowBytes < SWEET_FB_GPU_ROWBYTES) ?
+ 	    sweet_surface_create_ram(fWidth, fHeight, SWEET_FB_GPU_ROWBYTES, SWEET_FB_FORMAT_BGRA) : NULL;
+ 	fPixels = fSurface != NULL ? fSurface->kernelAddress() : 0;
++#if defined(SWEET_HOSTED)
++	/*
++	 * LINUX64: the host scans the panel surface out continuously (host/kmsfb.c), so nobody but present() may write it: clients get a RAM
++	 * surface as their default (the GPU's 4352-byte rows). Rendering straight into the panel surface showed half-drawn frames (patch
++	 * 0178's rule, which only applied with the direct port's GPU driver).
++	 */
++	if (fClientSurface == NULL) {
++		fClientSurface = sweet_surface_create_ram(fWidth, fHeight, SWEET_FB_GPU_ROWBYTES, SWEET_FB_FORMAT_BGRA);
++	}
++#endif
+ 	{
+ 		extern uintptr_t sweet_fb_pixels_va;       /* bsd/dev/sweet_ufs.c: framebuffer snapshots (sweetshot=SECS) read the panel through this */
+ 		sweet_fb_pixels_va = fPixels;
+@@ -424,12 +440,19 @@ AppleCLCD::start(IOService *provider)
  	{
  		uint32_t kick = 0;
  		PE_parse_boot_argn("sweetfb_kick", &kick, sizeof(kick));
@@ -2140,7 +2157,7 @@ index 58b5644..d13c19f 100644
  		if (probe != 0 || sweet_fb_sync_start != 0) {
  			sweet_fb_probe_init();
  		}
-@@ -446,6 +459,63 @@ AppleCLCD::start(IOService *provider)
+@@ -446,6 +469,63 @@ AppleCLCD::start(IOService *provider)
  
  static uint64_t sweet_fb_swap_count;
  
@@ -2204,7 +2221,7 @@ index 58b5644..d13c19f 100644
  void
  AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  {
-@@ -516,6 +586,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -516,6 +596,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  					row[x] = step < 6 ? (row[x] >> 1) & 0x7f7f7f7f : 0;
  				}
  			}
@@ -2214,7 +2231,7 @@ index 58b5644..d13c19f 100644
  		}
  		return;
  	}
-@@ -587,6 +660,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -587,6 +670,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  		sweet_fb_wait_frame_window();
  		uint64_t t0 = mach_absolute_time();
  		fb->present(rec);
