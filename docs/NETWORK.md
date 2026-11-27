@@ -41,7 +41,8 @@ BonitoWPA, password `password123`).
 
 Verified: the list in Settings, a join of the open test network from Settings (check mark, DHCP lease), real scans (8-11 networks reaching
 iOS). Not tested: joining a real network (needs its password, typed on the phone) and traffic to the internet. Safari did load a page served by the host over this path
-(`httpd` on 192.168.77.1, named in the host's `/etc/hosts` for dnsmasq); its content drew black until WebKit was given the GPU.
+(`httpd` on 192.168.77.1, named in the host's `/etc/hosts` for dnsmasq); its content drew black until WebKit was given the GPU (the kernel now writes
+the plugin's client list with WebKit's processes); after that the page renders (build 45936681835).
 
 A password typed on the phone passes through RAM files on the host (`/tmp/xnusvc.out`) and `wpa_cli`'s arguments; nothing is stored, so it
 is typed again after every boot.

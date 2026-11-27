@@ -27,6 +27,7 @@ What works, as seen in screenshots and logs from the phone:
 - Touch and the side buttons.
 - About 15 frames per second while swiping. The GPU then runs at its highest rated clock for this chip, so that is the limit now.
   A frame counter is drawn in the top-left corner.
+- Safari: a test web page served by the phone's Linux side loads and draws.
 - The Settings page for Wi-Fi: it lists the networks the phone's radio hears, and joining a test network works.
   Joining a real network with a password, and reaching the internet through it, have not been tested yet.
 - The phone's battery level and charging state.
@@ -36,6 +37,7 @@ What does not work, or is not there:
 - Changes made in iOS are kept in memory only and are lost at reboot. That includes Wi-Fi passwords.
 - The phone has to be started from a computer. Nothing is installed on it.
 - Sound, the cameras, Bluetooth and the mobile network.
+- The on-screen keyboard is sometimes drawn shifted to the right, with its last column cut off.
 - The Photos widget stays black, and several iOS background services crash repeatedly.
 
 The notes on each part are in [docs/GPU-BRIDGE.md](docs/GPU-BRIDGE.md) and [docs/NETWORK.md](docs/NETWORK.md).
