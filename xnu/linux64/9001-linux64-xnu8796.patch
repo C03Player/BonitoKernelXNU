@@ -1692,10 +1692,18 @@ index 0000000..cf52372
 +	return q.result;
 +}
 diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
-index b248d13..9add99c 100644
+index b248d13..8d36152 100644
 --- a/bsd/vfs/vfs_syscalls.c
 +++ b/bsd/vfs/vfs_syscalls.c
-@@ -4623,6 +4623,21 @@ open1(vfs_context_t ctx, struct nameidata *ndp, int uflags,
+@@ -4523,6 +4523,7 @@ fg_vn_data_free(void *fgvndata)
+  * XXX Need to implement uid, gid
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <pexpert/arm64/board_config.h> /* SWEET_HOSTED */
+ /*
+  * Boot-arg sweettrace=WORD[,WORD...]: print every open() whose path contains one of the words (>= 3 characters):
+  * "SWEET OPEN name[pid] path flags 0x.. -> errno". For finding which files a crashing daemon cannot open.
+@@ -4623,6 +4624,21 @@ open1(vfs_context_t ctx, struct nameidata *ndp, int uflags,
  	struct vfs_context context;
  	vnode_t authvp = NULLVP;
  
