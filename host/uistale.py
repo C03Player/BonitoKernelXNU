@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Repeat "scroll a list down and back to the top" and compare each screenshot with the first: stale content shows as a difference.
 
-  uistale.py OUTDIR [ROUNDS]      Settings must be open at the top. Compared: the rows between y=560 and y=2050 (below the status bar).
+  uistale.py OUTDIR [ROUNDS]      Settings must be open at the top. Compared: y=560 to 2040 (below the status bar).
 """
 import os, struct, subprocess, sys, time, zlib
 
@@ -25,6 +25,20 @@ def shot(path):
     return zlib.decompress(idat)
 
 
+def corrupt(ref, got):
+    """Blocks (90 x 30 pixels) of got that no vertical shift of up to 2 pixels explains (a list can settle 1 pixel off)."""
+    def block(img, x, y):
+        return b''.join(img[r * 3241 + 1 + x * 3:r * 3241 + 1 + (x + 90) * 3] for r in range(y, y + 30))
+    found = []
+    for y in range(560, 2010, 30):
+        for x in range(0, 1080, 90):
+            b = block(got, x, y)
+            if b != block(ref, x, y) and all(sum(abs(a - c) > 40 for a, c in zip(block(ref, x, y + dy)[1::3], b[1::3])) > 15
+                                             for dy in (0, -1, 1, -2, 2)):
+                found.append((x, y))
+    return found
+
+
 def to_top():
     for _ in range(3):
         touch('swipe', '540', '600', '540', '1900', '10')
@@ -41,10 +55,10 @@ for r in range(rounds):
         time.sleep(0.5)
     to_top()
     got = shot('%s/%02d.png' % (out, r))
-    diff = [y for y in range(560, 2050) if got[y * 3241:(y + 1) * 3241] != ref[y * 3241:(y + 1) * 3241]]
-    if len(diff) > 3:
+    blocks = corrupt(ref, got)
+    if blocks:
         bad += 1
-        print('round %d: %d rows differ, y %d-%d' % (r, len(diff), diff[0], diff[-1]), flush=True)
+        print('round %d: %d wrong blocks, y %d-%d' % (r, len(blocks), min(y for _, y in blocks), max(y for _, y in blocks) + 29), flush=True)
     else:
         os.unlink('%s/%02d.png' % (out, r))
-print('%d of %d rounds differ from the reference' % (bad, rounds))
+print('%d of %d rounds show wrong content' % (bad, rounds))
