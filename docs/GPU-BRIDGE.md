@@ -45,7 +45,7 @@ a submit's end, so `adrenod` now puts a colour/depth cache flush and a wait betw
 asked the direct port's GPU driver, so they now use the host GPU's fences (`sweet_gpu_host_latest_fence`, `_fence_done`). After both, one
 screenshot tour showed no such rectangles; one faint line on a just-woken lock screen is unexplained.
 
-Open: after scrolling a list, some rows show wrong content: another row's text ("Safari" beside the Sounds icon) or garbled glyphs.
+Open: after scrolling a list, some rows show wrong content (also seen by the user: the Accessibility label showing the clock): another row's text ("Safari" beside the Sounds icon) or garbled glyphs.
 `host/uistale.py` reproduces it (Settings at the top: scroll down, back, compare; blocks that differ beyond a 1 pixel settle offset; earlier
 "14 of 14" counts included that offset).
 
@@ -61,6 +61,7 @@ once per submit at first. The runtime looks live imports up by address, so new c
 | `sweettudebug=sysmem` | 8 of 14 | |
 | `sweetgpuremap=0` (check only) | 4 of 14 | mismatches logged |
 | `sweetgpuremap=1` (import again) | not measurable | 4 of 4 runs: backboardd stops swapping within seconds, no GPU fault, other GPU clients go on |
+| `sweetgpuremap=3` (read-only pin) | not measurable | 1 run: some re-imports refused (swaps went on); screen frozen soon after the first that succeeded, so a write pin copying pages is not the cause of the freeze |
 | `sweetgpuclean=1`, `sweetfullarea=1` | wrong content seen | kernel cleans imports before each submit; no partial render areas |
 | `sweetnoworker=1` | invalid | GPU fault, then `DeviceLost`: the screen froze |
 
