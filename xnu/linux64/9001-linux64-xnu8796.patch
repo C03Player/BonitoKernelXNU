@@ -1411,10 +1411,10 @@ index d405964..3033246 100644
  static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
  static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index bb2a2bf..24fa986 100644
+index bb2a2bf..ef61093 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -405,6 +405,57 @@ void (*unmountroot_pre_hook)(void);
+@@ -405,6 +405,69 @@ void (*unmountroot_pre_hook)(void);
  #endif
  void set_rootvnode(vnode_t);
  
@@ -1430,40 +1430,52 @@ index bb2a2bf..24fa986 100644
 + *   With boot-arg sweetmesalog=1 also mtl2-tu-debug and mtl2-env: Turnip's own messages on the console.
 + */
 +static void
-+sweet_plugin_files_thread(void *arg __unused, wait_result_t wr __unused)
++sweet_plugin_write(const char *path, const char *text)
 +{
-+	static const struct { const char *path, *text; } files[] = {
-+		{ "/private/var/local/mtl2-clients",
-+		  "SpringBoard chronod PosterBoard AegirPoster CollectionsPoster com.apple.WebKit.GPU com.apple.WebKit.WebContent\n" },
-+		{ "/private/var/local/mtl2-tu-debug", "default\n" },     /* leaves TU_DEBUG and MESA_LOG_FILE to the next file */
-+		{ "/private/var/local/mtl2-env", "TU_DEBUG=sysmem\nMESA_LOG_FILE=/dev/console\n" },
-+	};
-+	uint32_t mesalog = 0;
-+	unsigned done = 0, count = 1;
 +	int error = 0;
 +
-+	if (PE_parse_boot_argn("sweetmesalog", &mesalog, sizeof(mesalog)) && mesalog) {
-+		count = 3;
-+	}
-+	for (int tries = 0; tries < 600 && done < count; tries++) {
++	for (int tries = 0; tries < 600; tries++) {
 +		vfs_context_t ctx = vfs_context_current();
 +		vnode_t vp = NULLVP;
 +
-+		error = vnode_open(files[done].path, O_CREAT | O_TRUNC | FWRITE, 0644, 0, &vp, ctx);
++		error = vnode_open(path, O_CREAT | O_TRUNC | FWRITE, 0644, 0, &vp, ctx);
 +		if (error == 0) {
-+			error = vn_rdwr(UIO_WRITE, vp, __DECONST(caddr_t, files[done].text), (int)strlen(files[done].text), 0,
++			error = vn_rdwr(UIO_WRITE, vp, __DECONST(caddr_t, text), (int)strlen(text), 0,
 +			    UIO_SYSSPACE, 0, vfs_context_ucred(ctx), NULL, vfs_context_proc(ctx));
 +			vnode_close(vp, FWRITE, ctx);
 +			if (error == 0) {
-+				printf("SWEET plugin files: wrote %s (try %d)\n", files[done].path, tries);
-+				done++;
-+				continue;
++				printf("SWEET plugin files: wrote %s (try %d)\n", path, tries);
++				return;
 +			}
 +		}
 +		delay_for_interval(100, NSEC_PER_MSEC);
 +	}
-+	if (done < count) {
-+		printf("SWEET plugin files: could not write %s: %d\n", files[done].path, error);
++	printf("SWEET plugin files: could not write %s: %d\n", path, error);
++}
++
++static boolean_t
++sweet_plugin_flag(const char *name)
++{
++	uint32_t v = 0;
++
++	return PE_parse_boot_argn(name, &v, sizeof(v)) && v;
++}
++
++static void
++sweet_plugin_files_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	sweet_plugin_write("/private/var/local/mtl2-clients",
++	    "SpringBoard chronod PosterBoard AegirPoster CollectionsPoster com.apple.WebKit.GPU com.apple.WebKit.WebContent\n");
++	/* debugging switches of the plugin, one boot-arg each */
++	if (sweet_plugin_flag("sweetmesalog")) {        /* Turnip's own messages on the console */
++		sweet_plugin_write("/private/var/local/mtl2-tu-debug", "default\n");     /* leaves TU_DEBUG and MESA_LOG_FILE to mtl2-env */
++		sweet_plugin_write("/private/var/local/mtl2-env", "TU_DEBUG=sysmem\nMESA_LOG_FILE=/dev/console\n");
++	}
++	if (sweet_plugin_flag("sweetfullarea")) {       /* the bridge's partial render areas off */
++		sweet_plugin_write("/private/var/local/mtl2-env", "SWEET_FULL_AREA=1\n");
++	}
++	if (sweet_plugin_flag("sweetnoworker")) {       /* translation on the caller's thread */
++		sweet_plugin_write("/private/var/local/mtl2-threads", "0\n");
 +	}
 +	thread_terminate(current_thread());
 +}
@@ -1472,7 +1484,7 @@ index bb2a2bf..24fa986 100644
  extern lck_rw_t rootvnode_rw_lock;
  
  SECURITY_READ_ONLY_LATE(struct mach_vm_range) bsd_pageable_range = {};
-@@ -1043,6 +1094,23 @@ bsd_init(void)
+@@ -1043,6 +1106,23 @@ bsd_init(void)
  	bsd_init_kprintf("calling siginit\n");
  	siginit(kernproc);
  
