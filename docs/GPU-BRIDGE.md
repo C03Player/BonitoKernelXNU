@@ -40,6 +40,11 @@ through its cacheable mapping.
 Verified with build 45907541142 (log `hosted43`): all GPU clients open their device, no GPU fault, opcode error or hang, no `DeviceLost`,
 GPU-rendered lock and home screen, 13 to 42 swaps per second in the 5 s windows around unlocking.
 
+Rectangles of older frames (2026-11-27, `host/uitour.py` screenshots) had the direct port's two causes again: msm flushes the caches only at
+a submit's end, so `adrenod` now puts a colour/depth cache flush and a wait between command buffers; and the display's fence checks still
+asked the direct port's GPU driver, so they now use the host GPU's fences (`sweet_gpu_host_latest_fence`, `_fence_done`). After both, one
+screenshot tour showed no such rectangles; one faint line on a just-woken lock screen is unexplained.
+
 Open: the Photos widget is black.
 
 Debug switches: `XNU_MESALOG=1 xnu-run` (Turnip's messages on the console), `ADRENOD_V=-vv`, `ADRENOD_DUMP=1`; `host/gpu/vatest.c` writes to

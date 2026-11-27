@@ -93,6 +93,8 @@ join() {	# ssid-hex open|pass|pmk key-hex
 	say "joined 80 -"
 }
 
+# the radio comes up now (about 20 s for the modem): iOS's first scan would time out otherwise. Requests wait in OUT meanwhile.
+[ -n "$WIFIHOST_FAKE" ] || radio
 tail -n +1 -f "$OUT" | while read -r cmd a b c; do
 	echo "request: $cmd"	# (never the arguments: they hold passwords)
 	case "$cmd" in

@@ -31,4 +31,18 @@ service exists (`MiniIONetworkStack`, otherwise it waits). Verified with build 4
 
 Not tested: traffic to the internet (no network joined yet).
 
+## iOS's Wi-Fi (works, 2026-11-27)
+
+By default (`XNU_WIFI=1`) en0 is a radio to iOS: Settings > Wi-Fi lists what the host hears and joins it. `bsd/dev/linux64_wifi.c` answers the
+direct port's Apple80211 code (`redwood_apple80211.c`) by sending text lines to `host/initramfs/wifihost`, which drives `wpa_supplicant` and
+DHCP on `wlan0`; frames go over `xnu0` and are masqueraded. `launchd` loads `wifid` only when the device tree has `/arm-io/wlan`
+(`xnu.ko wlan=1`). `XNU_WIFI=` (empty) gives the wired en0 of above; `XNU_WIFI=fake` offers two made-up networks (BonitoTest, open;
+BonitoWPA, password `password123`).
+
+Verified: the list in Settings, a join of the open test network from Settings (check mark, DHCP lease), real scans (8-11 networks reaching
+iOS). Not tested: joining a real network (needs its password, typed on the phone) and traffic to the internet.
+
+A password typed on the phone passes through RAM files on the host (`/tmp/xnusvc.out`) and `wpa_cli`'s arguments; nothing is stored, so it
+is typed again after every boot.
+
 Debugging: `XNU_BOOTARGS="net_names=1 net_trace=60 sweetiolog=configd"`; with `hfsplus` the host can mount the live iOS volume read-only.
