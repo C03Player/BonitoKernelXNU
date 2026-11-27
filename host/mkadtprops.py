@@ -39,7 +39,13 @@ if 'product' not in find:
 for i in range(8):
     if 'cpu%d' % i in find:
         out += [('cpu%d' % i, k, v) for k, v in props('cpu%d' % i).items() if k not in ('name', 'AAPL,phandle', 'reg', 'state', 'timebase-frequency', 'cpu-id', 'cluster-core-id', 'l2-cache-id', 'clock-frequency')]
-out += [('product', k, v) for k, v in props('product').items() if k not in ('name', 'AAPL,phandle')]
+# The panel is 360x720 points, not the iPhone X's 375x812, so the X's keyboard (375 points wide) is cut off at the right. Overriding
+# artwork-device-subtype with the 360-point iPhone's (ARTWORK_SUBTYPE=2340, tried 2026-11-27) made iOS behave like a home-button phone
+# ("Press home to open"), so the X's value stays; the variable is for further tries.
+product = dict(props('product'))
+if 'artwork-device-subtype' in product:
+    product['artwork-device-subtype'] = struct.pack('<I', int(os.environ.get('ARTWORK_SUBTYPE', '2436')))
+out += [('product', k, v) for k, v in product.items() if k not in ('name', 'AAPL,phandle')]
 with open(sys.argv[1], 'wb') as f:
     for node, k, v in out:
         f.write(struct.pack('<32s32sI', node.encode(), k.encode(), len(v)) + v + b'\0' * (-len(v) & 3))
