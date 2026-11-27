@@ -1691,6 +1691,32 @@ index 0000000..cf52372
 +	linux64_call(LINUX64_CALL_HOSTCALL, &q);
 +	return q.result;
 +}
+diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
+index b248d13..9add99c 100644
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -4623,6 +4623,21 @@ open1(vfs_context_t ctx, struct nameidata *ndp, int uflags,
+ 	struct vfs_context context;
+ 	vnode_t authvp = NULLVP;
+ 
++#if defined(SWEET_HOSTED)
++	/*
++	 * LINUX64: the screen's brightness. A patch to iOS (host/iospatches.py) makes BKSDisplayBrightnessSet open "/sweetbr" followed by the
++	 * level's float bits in hex; the host reads this line and sets its panel's backlight (host/initramfs/xnu-bright).
++	 */
++	if (UIO_SEG_IS_USER_SPACE(ndp->ni_segflg)) {
++		char level[20];
++		size_t len = 0;
++		if (copyinstr(ndp->ni_dirp, level, sizeof(level), &len) == 0 && len == 17 && strncmp(level, "/sweetbr", 8) == 0) {
++			printf("SWEET BRIGHTNESS: %s\n", level + 8);
++			return ENOENT;
++		}
++	}
++#endif
++
+ 	oflags = uflags;
+ 
+ 	amode = oflags & O_ACCMODE;
 diff --git a/iokit/Kernel/IONVRAMCHRPHandler.cpp b/iokit/Kernel/IONVRAMCHRPHandler.cpp
 index c328c46..3ca0d98 100644
 --- a/iokit/Kernel/IONVRAMCHRPHandler.cpp
