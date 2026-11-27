@@ -83,7 +83,7 @@ static int do_unmap(uint64_t iova, uint64_t len)
 	int found = 0;
 
 	/* as the direct port's window and buffer release: the GPU finishes what it was given before memory goes (up to 1 s) */
-	for (int i = 0; i < 50 && last_fence && do_wait(last_fence, AGPU_WAIT_SLICE_NS) == -ETIMEDOUT; i++)
+	for (int i = 0; i < 1000000000ull / AGPU_WAIT_SLICE_NS && last_fence && do_wait(last_fence, AGPU_WAIT_SLICE_NS) == -ETIMEDOUT; i++)
 		;
 	for (unsigned i = 0; i < nmaps;) {
 		if (maps[i].iova >= iova && maps[i].iova + maps[i].len <= iova + len) {

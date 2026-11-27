@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /*
  * The GPU bridge's messages (docs/GPU-BRIDGE.md): the hosted XNU (bsd/dev/sweet_gpu_host.c, through linux64_hostcall) asks adrenod, the Linux
- * service that owns the Adreno's render node. One request, one reply; the reply's status is 0 or -errno.
+ * service that owns the Adreno's render node. One request, one reply; the reply's status is 0 or -errno (Linux's numbers: XNU's differ,
+ * so the XNU side compares with the AGPU_E* values below).
  */
 #ifndef ADRENOD_PROTO_H
 #define ADRENOD_PROTO_H
@@ -11,7 +12,10 @@
 #define AGPU_VERSION 1
 #define AGPU_MAX_PAGES 16384	/* per MAP request (64 MiB of 4 KiB pages) */
 #define AGPU_MAX_IBS 16
-#define AGPU_WAIT_SLICE_NS 20000000ull	/* the longest a WAIT holds the calling XNU CPU */
+#define AGPU_EAGAIN 11		/* Linux errno values used in replies (XNU: EAGAIN 35, ETIMEDOUT 60) */
+#define AGPU_EBUSY 16
+#define AGPU_ETIMEDOUT 110
+#define AGPU_WAIT_SLICE_NS 2000000ull	/* the longest a WAIT holds the calling XNU CPU and the service (others' submits queue behind it) */
 
 enum agpu_op {
 	AGPU_INFO = 1,		/* -> v[0] chip id, v[1] GMEM bytes, v[2] GMEM base, v[3] VA start, v[4] VA size, v[5] highest bank bit,
