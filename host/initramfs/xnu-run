@@ -67,6 +67,8 @@ STATE=
 command -v xnu-state > /dev/null && { pidof xnu-state > /dev/null || setsid xnu-state /tmp/xnustate > /dev/null 2>&1 < /dev/null & sleep 1; STATE="state_in=/tmp/xnustate"; }
 # brightness: iOS's slider sets the panel (host/initramfs/xnu-bright follows the kernel log)
 command -v xnu-bright > /dev/null && { pidof xnu-bright > /dev/null || setsid xnu-bright > /tmp/xnu-bright.log 2>&1 < /dev/null & }
+# shut down and restart from iOS (host/initramfs/xnu-halt)
+command -v xnu-halt > /dev/null && { pidof xnu-halt > /dev/null || setsid xnu-halt > /tmp/xnu-halt.log 2>&1 < /dev/null & }
 # touch and buttons: Linux's input events, relayed into a file xnu.ko reads
 : > /tmp/xnuinput
 pidof evrelay > /dev/null || setsid evrelay /tmp/xnuinput > /tmp/evrelay.log 2>&1 < /dev/null &

@@ -19,3 +19,10 @@ it read-write; the hosted system never writes it. `xnu-run` gives XNU a device-m
 Verified 2026-11-27: Light appearance set in Settings was still set after a reboot without `sync`; `SAVE=reset` brought back the stored
 Dark setting; the volume header's hash was the same on every boot. Not verified: whether the keychain (Wi-Fi passwords) can be read back
 after a reboot (the key store is a software stand-in), long use, a full save area.
+
+## Shut down and restart from iOS
+
+`host/initramfs/xnu-halt` follows the kernel log: iOS's shut down powers the phone off, its restart goes to the bootloader. Without it
+the phone stayed on with Linux unresponsive (seen 2026-11-27). Tested 2026-11-27 with the phone on USB: it left USB 19 s after
+the slider (iOS had unmounted its disk), then appeared again 20 s later, apparently because it is powered: the bootloader starts slot A
+(the recovery), whose timer goes to the bootloader. Not tested unplugged. Restart was not tested.

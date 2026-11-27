@@ -78,6 +78,7 @@ if [ -n "${HOSTED_KERNEL:-}" ]; then
 	install -m755 host/initramfs/xnu-state "$R/bin/xnu-state"
 	install -m755 host/initramfs/xnu-save "$R/bin/xnu-save"
 	install -m755 host/initramfs/xnu-bright "$R/bin/xnu-bright"
+	install -m755 host/initramfs/xnu-halt "$R/bin/xnu-halt"
 	# dmsetup (this machine's, with its libraries) for the writable snapshot of the root disk
 	mkdir -p "$R/dm"
 	D=$(command -v dmsetup)
