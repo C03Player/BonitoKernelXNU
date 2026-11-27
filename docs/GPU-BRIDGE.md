@@ -45,6 +45,11 @@ a submit's end, so `adrenod` now puts a colour/depth cache flush and a wait betw
 asked the direct port's GPU driver, so they now use the host GPU's fences (`sweet_gpu_host_latest_fence`, `_fence_done`). After both, one
 screenshot tour showed no such rectangles; one faint line on a just-woken lock screen is unexplained.
 
+Open: after scrolling a list, some rows keep another row's text (Settings: "Emergency SO" beside the Airplane Mode icon). Reproduced in
+14 of 14 rounds by `host/uistale.py` (Settings at the top: scroll down, back, compare). The Metal plugin cleans the CPU caches for the
+surfaces and no-copy buffers of each command buffer, and an extra GPU cache invalidate in `adrenod` changed nothing (14 of 14), so neither
+cache explains it by itself. Next: how the plugin tracks surfaces whose content changed.
+
 Open: the Photos widget is black.
 
 Debug switches: `XNU_MESALOG=1 xnu-run` (Turnip's messages on the console), `ADRENOD_V=-vv`, `ADRENOD_DUMP=1`; `host/gpu/vatest.c` writes to

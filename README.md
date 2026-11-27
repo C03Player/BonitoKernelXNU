@@ -37,6 +37,7 @@ What does not work, or is not there:
 - Changes made in iOS are kept in memory only and are lost at reboot. That includes Wi-Fi passwords.
 - The phone has to be started from a computer. Nothing is installed on it.
 - Sound, the cameras, Bluetooth and the mobile network.
+- After scrolling a list, some rows can keep the text of another row.
 - The on-screen keyboard is sometimes drawn shifted to the right, with its last column cut off.
 - The Photos widget stays black, and several iOS background services crash repeatedly.
 
