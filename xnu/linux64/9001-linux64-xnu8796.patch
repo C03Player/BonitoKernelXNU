@@ -2209,7 +2209,7 @@ index 2545cf9..9a9f5de 100644
  	uint64_t mpidr = topology->cpus[logical].phys_id;
  	unsigned int aff0 = mpidr & 0xff;
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 58b5644..0daecc2 100644
+index 58b5644..27e2b28 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -34,6 +34,7 @@
@@ -2232,7 +2232,18 @@ index 58b5644..0daecc2 100644
  bool sweet_gpu_fb_ready(void);          /* the Pixel 4 composites with the GPU; bonito keeps the CPU path (bsd/dev/bonito_gpu.c) */
  int sweet_gpu_surface_slot(uint64_t key);
  int sweet_gpu_map_surface(uint64_t key, const uint64_t *pages, uint32_t npages, uint32_t page_size);
-@@ -401,6 +407,16 @@ AppleCLCD::start(IOService *provider)
+@@ -340,6 +346,10 @@ public:
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
+ 
++#if defined(SWEET_HOSTED)
++static void sweet_backlight_publish(IOService *provider);     /* below */
++#endif
++
+ bool
+ AppleCLCD::start(IOService *provider)
+ {
+@@ -401,6 +411,16 @@ AppleCLCD::start(IOService *provider)
  	fClientSurface = (gpu && fRowBytes < SWEET_FB_GPU_ROWBYTES) ?
  	    sweet_surface_create_ram(fWidth, fHeight, SWEET_FB_GPU_ROWBYTES, SWEET_FB_FORMAT_BGRA) : NULL;
  	fPixels = fSurface != NULL ? fSurface->kernelAddress() : 0;
@@ -2249,7 +2260,7 @@ index 58b5644..0daecc2 100644
  	{
  		extern uintptr_t sweet_fb_pixels_va;       /* bsd/dev/sweet_ufs.c: framebuffer snapshots (sweetshot=SECS) read the panel through this */
  		sweet_fb_pixels_va = fPixels;
-@@ -424,17 +440,27 @@ AppleCLCD::start(IOService *provider)
+@@ -424,17 +444,27 @@ AppleCLCD::start(IOService *provider)
  	{
  		uint32_t kick = 0;
  		PE_parse_boot_argn("sweetfb_kick", &kick, sizeof(kick));
@@ -2277,7 +2288,7 @@ index 58b5644..0daecc2 100644
  	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
  	setProperty("external", false);
  	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
-@@ -446,6 +472,130 @@ AppleCLCD::start(IOService *provider)
+@@ -446,6 +476,130 @@ AppleCLCD::start(IOService *provider)
  
  static uint64_t sweet_fb_swap_count;
  
@@ -2408,7 +2419,7 @@ index 58b5644..0daecc2 100644
  void
  AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  {
-@@ -516,6 +666,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -516,6 +670,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  					row[x] = step < 6 ? (row[x] >> 1) & 0x7f7f7f7f : 0;
  				}
  			}
@@ -2418,7 +2429,7 @@ index 58b5644..0daecc2 100644
  		}
  		return;
  	}
-@@ -587,6 +740,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -587,6 +744,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  		sweet_fb_wait_frame_window();
  		uint64_t t0 = mach_absolute_time();
  		fb->present(rec);
