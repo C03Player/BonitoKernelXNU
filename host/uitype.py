@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Type on the hosted iOS's keyboard (lower-case letters, ".", space, "\\n" = the Go key) by injected touches: uitype.py TEXT
 
-The keyboard must be up. It comes in two placements here (flush, or shifted right with its last column cut off: an open fault), told apart
+The keyboard must be up. Without the keyboard patch (docs/IOS-PATCHES.md) it can sit shifted right with its last column cut off; told apart
 by a screenshot: where the "q" key starts.
 """
 import os, subprocess, sys, tempfile, time, zlib, struct

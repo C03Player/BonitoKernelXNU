@@ -79,6 +79,13 @@ if [ -n "${HOSTED_KERNEL:-}" ]; then
 	D=$(command -v dmsetup)
 	cp -L "$D" $(ldd "$D" | grep -oE '/[^ )]+') "$R/dm/"
 	python3 host/mkadtprops.py "$R/lib/firmware/xnu/adtprops.bin"
+	# patches to iOS's own code (host/iospatches.py), applied by xnu-run to the root disk's snapshot; the list is made from the local
+	# copy of that iOS's shared cache (DYLD) and holds a few of its bytes, so it stays in work/
+	if [ -d "${DYLD:-/usb/work/dyld}" ]; then
+		gcc -static -O2 -s -o "$R/bin/iospatch" host/iospatch.c
+		python3 host/iospatches.py "${DYLD:-/usb/work/dyld}" $W/iospatch.list "${IOSIMG:-/usb/work/ios16-root-userland.img}"
+		cp $W/iospatch.list "$R/etc/iospatch.list"
+	fi
 fi
 (cd "$R" && find . | cpio -o -H newc --quiet --owner=0:0 | gzip -9) > $W/initramfs.gz
 # the mainline SDM670 tree has no watchdog node; add the SoC's APSS watchdog (stock device tree address, as SDM845's mainline node) to a copy

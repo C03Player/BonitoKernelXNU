@@ -27,6 +27,8 @@ if [ "$H" = "H+" ] || [ "$H" = "HX" ]; then
 		DM_DISABLE_UDEV=1 $DM create iosroot --noudevsync --table "0 $(blockdev --getsz "$D") snapshot $D /dev/loop0 N 8" || exit 1
 		[ -e /dev/mapper/iosroot ] || { echo "no snapshot device"; exit 1; }
 	fi
+	# patches to iOS's code, into the snapshot (RAM), before XNU reads it. XNU_PATCH=0 leaves iOS as it is.
+	[ "${XNU_PATCH:-1}" = 1 ] && [ -f /etc/iospatch.list ] && iospatch /dev/mapper/iosroot /etc/iospatch.list
 	DISK="hostdisk=/dev/mapper/iosroot hostdisk_rw=1"
 else
 	echo "$D has no HFS+ volume"

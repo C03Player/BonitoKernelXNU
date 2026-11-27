@@ -19,3 +19,9 @@ docker/
 bonito/research/
 __pycache__/
 *.pyc
+# built in place (docs/IOS-PATCHES.md)
+host/sweetpoke/*.ko
+host/sweetpoke/*.mod*
+host/sweetpoke/.*
+host/sweetpoke/Module.symvers
+host/sweetpoke/modules.order
