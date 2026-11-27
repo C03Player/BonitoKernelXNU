@@ -16,18 +16,40 @@ but every piece of hardware needs a driver written for XNU, which is slow work, 
 A mainline Linux kernel already drives much of this phone. Hosting XNU inside Linux aims to reuse that work. It does not by itself make graphics faster:
 the GPU still has to do the same work. The reasoning, and the compatibility measurements behind it, are in [docs/XNULINUX-EVAL.md](docs/XNULINUX-EVAL.md).
 
-## Where things stand (26 November 2026)
+## Where things stand (27 November 2026)
 
-The Linux side works. A mainline Linux 7.3.5 kernel boots on the phone with a shell over the USB cable, a working display and the GPU driver loaded.
-A small Vulkan test passes on the GPU. Details are in [docs/GATE1.md](docs/GATE1.md).
+**iOS boots to its home screen on the phone, running inside Linux, and draws on the GPU.** The ported XNU kernel, loaded into the running
+Linux kernel, starts the iOS 16 system from the phone's storage on four processor cores. About 90 seconds after starting, the lock screen is up.
 
-**iOS now boots to its home screen on the phone, running inside Linux.** The ported XNU kernel, loaded into the running Linux kernel, starts the
-iOS 16 system from the phone's storage on two processor cores. It reaches the lock screen, can be unlocked with a swipe, and shows the home screen.
+What works, as seen in screenshots and logs from the phone:
 
-It is not usable yet: startup takes more than a minute, touches have so far been injected from the computer rather than read from the screen,
-there is no network, and drawing is done by the processor without the GPU. Changes to the system are kept in memory only and are lost at reboot.
+- The lock screen, home screen, App Library, Control Center, Settings and Safari's start page, drawn on the Adreno GPU.
+- Touch and the side buttons.
+- About 15 frames per second while swiping. The GPU then runs at its highest rated clock for this chip, so that is the limit now.
+  A frame counter is drawn in the top-left corner.
+- The Settings page for Wi-Fi: it lists the networks the phone's radio hears, and joining a test network works.
+  Joining a real network with a password, and reaching the internet through it, have not been tested yet.
+- The phone's battery level and charging state.
 
-The full history of tests and the next steps are in [docs/PORT-HOSTED.md](docs/PORT-HOSTED.md).
+What does not work, or is not there:
+
+- Changes made in iOS are kept in memory only and are lost at reboot. That includes Wi-Fi passwords.
+- The phone has to be started from a computer. Nothing is installed on it.
+- Sound, the cameras, Bluetooth and the mobile network.
+- The Photos widget stays black, and several iOS background services crash repeatedly.
+
+The notes on each part are in [docs/GPU-BRIDGE.md](docs/GPU-BRIDGE.md) and [docs/NETWORK.md](docs/NETWORK.md).
+The history of the port is in [docs/PORT-HOSTED.md](docs/PORT-HOSTED.md).
+
+## Trying it
+
+With the phone in its bootloader and the boot image's parts built (see below), this starts iOS without writing anything to the phone:
+
+```
+host/boot-ios.sh 60
+```
+
+The number is the minutes after which the phone returns to its bootloader.
 
 ## What is in this repository
 
