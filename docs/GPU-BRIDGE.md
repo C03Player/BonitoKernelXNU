@@ -87,3 +87,6 @@ This phone's speed grade (bin 0) is rated for 430 MHz in the stock and mainline 
 of `opp-supported-hw` in the device tree) left the GPU unable to start: `gpu hw init failed`, `GMU firmware fault`, no frames (one boot;
 the next boot at 430 MHz was fine). The option was removed again. Baseline at 430 MHz, scrolling Settings with injected swipes: 11.6
 frames per second over 7 five-second windows, hottest sensor 52.5 C.
+
+Blur (2026-11-27): the same Settings scroll gave 12.3 frames per second as is and 12.9 with Reduce Transparency on (one run each, same
+boot; earlier runs without it: 11.6 and 12.2). A faster blur would gain little there. Not measured: home screen, Control Center, folders.
