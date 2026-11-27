@@ -1998,7 +1998,7 @@ index 89d8840..54516fb 100644
 +	controller->release();
 +}
 diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
-index 7fb6243..0c18304 100644
+index 7fb6243..c33d125 100644
 --- a/iokit/Kernel/arm/SweetAccelerator.cpp
 +++ b/iokit/Kernel/arm/SweetAccelerator.cpp
 @@ -35,6 +35,28 @@
@@ -2030,7 +2030,18 @@ index 7fb6243..0c18304 100644
  #include <IOKit/IOService.h>
  #include <IOKit/IOLib.h>
  #include <IOKit/IOUserClient.h>
-@@ -156,6 +178,7 @@ class SweetAcceleratorUserClient : public IOUserClient {
+@@ -88,6 +110,10 @@ class IOAcceleratorES : public IOService {
+ 
+ OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+ 
++#if defined(SWEET_HOSTED)
++extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
++#endif
++
+ class SweetAccelerator : public IOAcceleratorES {
+ 	OSDeclareDefaultStructors(SweetAccelerator);
+ 
+@@ -156,6 +182,7 @@ class SweetAcceleratorUserClient : public IOUserClient {
  
  	int addMemory(IOMemoryDescriptor *md, uint64_t *handle, uint64_t *va);
  	IOReturn v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize);
@@ -2038,14 +2049,14 @@ index 7fb6243..0c18304 100644
  	SweetV2BO *v2Find(uint64_t handle);
  	IOReturn v2NewSlot(IOMemoryDescriptor *md, uint64_t bytes, bool imported, uint64_t *handle);
  	void v2Release(SweetV2BO *bo);
-@@ -639,8 +662,30 @@ SweetAcceleratorUserClient::v2Release(SweetV2BO *bo)
+@@ -639,8 +666,30 @@ SweetAcceleratorUserClient::v2Release(SweetV2BO *bo)
  	bzero(bo, sizeof(*bo));
  }
  
 +#if defined(SWEET_HOSTED)
 +/* LINUX64: every failed request is logged (GPU bridge bring-up: what made Turnip declare the device lost) */
- IOReturn
- SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
++IOReturn
++SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
 +{
 +	IOReturn r = v2MethodBody(method, in, inSize, out, outSize);
 +	if (r != kIOReturnSuccess && !(method == NativeAdrenoMethodWaitFence && r == kIOReturnTimeout)) {
@@ -2057,8 +2068,8 @@ index 7fb6243..0c18304 100644
 +	return r;
 +}
 +#else
-+IOReturn
-+SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
+ IOReturn
+ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
 +{
 +	return v2MethodBody(method, in, inSize, out, outSize);
 +}
@@ -2069,7 +2080,44 @@ index 7fb6243..0c18304 100644
  {
  	static uint32_t logged;
  #define V2_IN(T)        if (in == NULL || inSize != sizeof(T)) return kIOReturnBadArgument; const T *rq = (const T *)in
-@@ -864,6 +909,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+@@ -842,6 +891,36 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+ 		if (rq->wait_fence != 0 && sweet_gpu_wait_fence_ns((uint32_t)rq->wait_fence, rq->wait_timeout_ns)) {
+ 			return kIOReturnTimeout;
+ 		}
++#if defined(SWEET_HOSTED)
++		/*
++		 * LINUX64, diagnostic (boot-arg sweetgpuclean=1): before the GPU runs, the CPU caches are cleaned for every buffer this client imported from
++		 * its own memory (is stale content in lists a cache problem?). Slow: every imported page, every submit.
++		 */
++		{
++			static int on = -1;
++			if (on < 0) {
++				uint32_t v = 0;
++				on = PE_parse_boot_argn("sweetgpuclean", &v, sizeof(v)) && v;
++			}
++			if (on) {
++				IOLockLock(fLock);
++				for (uint32_t i = 0; i < fBOCap; i++) {
++					SweetV2BO *bo = &fBO[i];
++					if (!bo->imported || bo->iova == 0 || bo->md == NULL) {
++						continue;
++					}
++					for (uint64_t off = 0; off < bo->bytes; off += 4096) {
++						IOByteCount seg = 0;
++						addr64_t pa = bo->md->getPhysicalSegment(off, &seg, kIOMemoryMapperNone);
++						if (pa != 0) {
++							flush_dcache64(pa, 4096, TRUE);
++						}
++					}
++				}
++				IOLockUnlock(fLock);
++			}
++		}
++#endif
+ 		bool busy = false;
+ 		uint32_t fence = sweet_gpu_submit_v2(iova, dw, rq->buffer_count, &busy);
+ 		if (fence == 0) {
+@@ -864,6 +943,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
  		V2_OUT(NativeAdrenoAbiStatus);
  		if (sweet_gpu_lost(&fEpoch, fLastFence)) {
  			fFaults++;
