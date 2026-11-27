@@ -17,6 +17,10 @@ and `wlanmdsp.mbn`, `bdwlan-bonito.bin` from the phone's vendor image in `$MODEM
 
 Open: the MAC address is random at each boot.
 
+The USB link to the PC is 172.31.254.0/30 (phone .2). It was 192.168.7.0/24 until a real network with those addresses was joined
+(2026-11-27): the route to its router and name server then pointed down the cable, so no name resolved. The clock must be right as well:
+the init script sets it after loading the modules, whose PMIC clock driver otherwise leaves it in 1970.
+
 ## iOS networking (link works, 2026-11-27)
 
 en0 in XNU (`bsd/dev/linux64_net_link.c`, boot-arg `linux64net=1`, set by `xnu-run`; `XNU_NET=0` leaves it out) exchanges frames with the
@@ -29,7 +33,7 @@ service exists (`MiniIONetworkStack`, otherwise it waits). Verified with build 4
 
     wifi-up; XNU_CPUS=4 xnu-run; xnu-net; wifi-join /tmp/wifi.conf
 
-Not tested: traffic to the internet (no network joined yet).
+Internet traffic: see below.
 
 ## iOS's Wi-Fi (works, 2026-11-27)
 
@@ -40,7 +44,7 @@ DHCP on `wlan0`; frames go over `xnu0` and are masqueraded. `launchd` loads `wif
 BonitoWPA, password `password123`).
 
 Verified: the list in Settings, a join of the open test network from Settings (check mark, DHCP lease), real scans (8-11 networks reaching
-iOS). Not tested: joining a real network (needs its password, typed on the phone) and traffic to the internet. Safari did load a page served by the host over this path
+iOS). A real network was joined from Settings on 2026-11-27. Safari did load a page served by the host over this path
 (`httpd` on 192.168.77.1, named in the host's `/etc/hosts` for dnsmasq); its content drew black until WebKit was given the GPU (the kernel now writes
 the plugin's client list with WebKit's processes); after that the page renders (build 45936681835).
 

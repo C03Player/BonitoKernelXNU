@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Userspace network bridge to the phone's USB Ethernet gadget (CDC-ECM, 18d1:4eed (older kernels 1209:0001)), without root, tun/tap or a kernel driver.
 
-  usbbridge.py ping [COUNT]               ARP + ICMP echo to the phone (192.168.7.2): proves the link
+  usbbridge.py ping [COUNT]               ARP + ICMP echo to the phone: proves the link
   usbbridge.py serve [LPORT:RPORT ...]    relay local TCP ports to the phone; default 2222:22  (then: ssh -p 2222 -i KEY root@127.0.0.1)
   usbbridge.py dump [SECONDS]             print every frame the phone sends (ARP, mDNS, ...) for debugging
 
 Why: the dev container has its own network namespace, no CAP_NET_ADMIN and no /dev/net/tun, so the host kernel's cdc_ether interface is not usable here.
 Instead libusb (pyusb, apt: python3-usb) claims the ECM data interface and this program is the host's whole IP stack: ARP, ICMP echo, and a small
 TCP client (in-order only, retransmits after 1 s, no congestion control: the link is a USB cable). Same idea as the Pixel 4 port's FlameBridge.
-The gadget (xnu patch 0075): phone ue0 = 192.168.7.2/24, MAC 02:00:5e:77:ee:02; this side = 192.168.7.1, MAC 02:00:5e:77:ee:01.
+The gadget: phone MAC 02:00:5e:77:ee:02, this side 02:00:5e:77:ee:01. Addresses: the phone is .2 and this side .1 of one of NETS (the hosted
+Linux uses 172.31.254.0/30, because home networks often use 192.168.7.0/24; the direct port's gadget, xnu patch 0075, uses the latter). The
+one that answers ARP is used.
 """
 import os, queue, select, socket, struct, sys, threading, time
 
@@ -19,7 +21,8 @@ except ImportError:
 
 IDS = [(0x18d1, 0x4eed), (0x18d1, 0x4ee1), (0x1209, 0x0001)]   # the gadget's USB ids: 18d1:4eed now (a vendor the host's udev gives the container access to), 1209:0001 before
 VID, PID = IDS[0]
-HOST_IP, PHONE_IP = bytes([192, 168, 7, 1]), bytes([192, 168, 7, 2])
+NETS = [(bytes([172, 31, 254, 1]), bytes([172, 31, 254, 2])), (bytes([192, 168, 7, 1]), bytes([192, 168, 7, 2]))]
+HOST_IP, PHONE_IP = NETS[0]	# (this side, the phone); Stack.find_phone() picks the pair
 HOST_MAC = bytes.fromhex('02005e77ee01')
 PHONE_MAC = bytes.fromhex('02005e77ee02')
 BCAST = b'\xff' * 6
@@ -264,6 +267,24 @@ class Stack:
                 if c and sport == c.rport:
                     c.on_segment(seq, ack, flags, body[(off >> 4) * 4:])
 
+    def find_phone(self, timeout=3.0):
+        """Ask for the phone at each known address and keep the pair that answers (the first one if none does)."""
+        global HOST_IP, PHONE_IP
+        end = time.time() + timeout
+        while time.time() < end:
+            for HOST_IP, PHONE_IP in NETS:
+                self.link.send(arp_frame(1, BCAST, PHONE_IP))
+                until = time.time() + 0.3
+                while time.time() < until:
+                    try:
+                        f = self.link.rx.get(timeout=0.05)
+                    except queue.Empty:
+                        continue
+                    if f[12:14] == b'\x08\x06' and f[20:22] == b'\0\x02' and f[28:32] == PHONE_IP:
+                        self.phone_mac = f[22:28]
+                        return
+        HOST_IP, PHONE_IP = NETS[0]
+
     def ping(self, n=4):
         self.link.send(arp_frame(1, BCAST, PHONE_IP))
         ok = 0
@@ -282,7 +303,7 @@ class Stack:
                     got = True
                 except queue.Empty:
                     pass
-            print('reply from 192.168.7.2: time=%.1f ms' % ((time.time() - t0) * 1000) if got else 'no reply (seq %d)' % i)
+            print('reply from %s: time=%.1f ms' % (socket.inet_ntoa(PHONE_IP), (time.time() - t0) * 1000) if got else 'no reply (seq %d)' % i)
             ok += got
             time.sleep(0.5)
         return ok
@@ -295,7 +316,7 @@ class Stack:
             s.bind(('127.0.0.1', lp))
             s.listen(4)
             listeners[s] = rp
-            print('relaying 127.0.0.1:%d -> 192.168.7.2:%d' % (lp, rp), flush=True)
+            print('relaying 127.0.0.1:%d -> %s:%d' % (lp, socket.inet_ntoa(PHONE_IP), rp), flush=True)
         self.link.send(arp_frame(1, BCAST, PHONE_IP))
         while True:
             r, _, _ = select.select(list(listeners), [], [], 0.02)
@@ -320,6 +341,8 @@ def main():
     a = sys.argv[1:] or ['ping']
     link = Link()
     st = Stack(link)
+    if a[0] != 'dump':
+        st.find_phone()
     if a[0] == 'ping':
         ok = st.ping(int(a[1]) if len(a) > 1 else 4)
         sys.exit(0 if ok else 1)

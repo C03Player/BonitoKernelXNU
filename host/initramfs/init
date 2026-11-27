@@ -1,5 +1,5 @@
 #!/bin/sh
-# Gate-1 test userland: USB Ethernet to the PC (192.168.7.2, same MACs and ids as the iOS gadget so bonito/tools/usbbridge.py works), telnet + http,
+# Gate-1 test userland: USB Ethernet to the PC (172.31.254.2, same MACs and ids as the iOS gadget so bonito/tools/usbbridge.py works), telnet + http,
 # a report in /www, and a timed reboot to the bootloader (boot-arg reboot=SECS, default 240).
 /bin/busybox --install -s /bin
 export PATH=/bin
@@ -21,15 +21,16 @@ T=$(sed -n 's/.*\breboot=\([0-9]*\).*/\1/p' /proc/cmdline); T=${T:-240}
 # if the whole machine hangs (a CPU lost to hosted XNU can take the others with it), the SoC watchdog restarts it
 (sleep 15; [ -c /dev/watchdog ] && watchdog -T 30 -t 5 /dev/watchdog) &
 
-# no battery-backed clock is read here: the build time of the image is a good enough wall clock (boot-arg epoch=)
-# (not one sed pattern: the bootloader makes the command line long and busybox sed's word boundary did not match there)
-E=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^epoch=//p' | tail -n 1); [ -n "$E" ] && date -u -s "@$E" > /dev/null
-
 # coldplug the modules (two passes: the second finds what the first created)
 for pass in 1 2; do
 	find /sys/devices -name modalias -exec cat {} + 2>/dev/null | sort -u | while read -r m; do modprobe -q "$m"; done
 	sleep 3
 done
+
+# the wall clock is the image's build time (boot-arg epoch=): the PMIC's clock, which its driver puts in the system time when the modules
+# above load it, is not set (1970), and iOS then refuses every web certificate
+# (not one sed pattern: the bootloader makes the command line long and busybox sed's word boundary did not match there)
+E=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^epoch=//p' | tail -n 1); [ -n "$E" ] && date -u -s "@$E" > /dev/null
 
 G=/sys/kernel/config/usb_gadget/g1
 mkdir -p $G/strings/0x409 $G/configs/c.1 $G/functions/ecm.usb0
@@ -43,7 +44,8 @@ ln -s $G/functions/ecm.usb0 $G/configs/c.1/
 for i in $(seq 1 20); do UDC=$(ls /sys/class/udc | head -n 1); [ -n "$UDC" ] && break; sleep 1; done
 echo "$UDC" > $G/UDC
 ifconfig lo 127.0.0.1 up
-ifconfig usb0 192.168.7.2 netmask 255.255.255.0 up
+# (not 192.168.7.x: a Wi-Fi network with the same addresses took the route to its router and name server onto the cable)
+ifconfig usb0 172.31.254.2 netmask 255.255.255.252 up
 
 # servers first: a report step that hangs must not hide the machine
 dmesg > /www/dmesg.txt
