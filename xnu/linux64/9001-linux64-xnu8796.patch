@@ -995,7 +995,7 @@ index e7b46fd..3b46756 100644
  	}
 diff --git a/bsd/dev/sweet_gpu_host.c b/bsd/dev/sweet_gpu_host.c
 new file mode 100644
-index 0000000..affaf69
+index 0000000..6ca35de
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_host.c
 @@ -0,0 +1,397 @@
@@ -1019,6 +1019,7 @@ index 0000000..affaf69
 +
 +static LCK_GRP_DECLARE(sgh_grp, "sweet_gpu_host");
 +static LCK_MTX_DECLARE(sgh_lock, &sgh_grp);	/* one request at a time: the buffers below are shared */
++static uint32_t sgh_latest, sgh_done;	/* the newest fence submitted, and the newest known done */
 +static LCK_MTX_DECLARE(sgh_pool, &sgh_grp);
 +static uint8_t sgh_req[sizeof(struct agpu_req) + AGPU_MAX_PAGES * 8];
 +static uint8_t sgh_rep[sizeof(struct agpu_rep) + 64];
@@ -1268,7 +1269,6 @@ index 0000000..affaf69
 + * For the display's pacing (SweetFramebuffer: a frame is copied only once the GPU work submitted before its swap is done, or old tiles of
 + * the surface reach the panel): the newest fence submitted, and whether a fence is done. The newest one known done spares most calls.
 + */
-+static uint32_t sgh_latest, sgh_done;
 +
 +uint32_t sweet_gpu_host_latest_fence(void);
 +uint32_t
