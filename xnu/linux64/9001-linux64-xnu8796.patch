@@ -1695,7 +1695,7 @@ index 2545cf9..9a9f5de 100644
  	uint64_t mpidr = topology->cpus[logical].phys_id;
  	unsigned int aff0 = mpidr & 0xff;
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 58b5644..377bb52 100644
+index 58b5644..c5a0c05 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -34,6 +34,7 @@
@@ -1726,6 +1726,90 @@ index 58b5644..377bb52 100644
  		if (probe != 0 || sweet_fb_sync_start != 0) {
  			sweet_fb_probe_init();
  		}
+@@ -446,6 +454,63 @@ AppleCLCD::start(IOService *provider)
+ 
+ static uint64_t sweet_fb_swap_count;
+ 
++#if defined(SWEET_HOSTED)
++/*
++ * LINUX64: the host scans this framebuffer out without copying it (host/kmsfb.c), and the display engine does not read the CPUs' caches:
++ * what was written is cleaned to memory. Boot-arg sweetfb_fps=1 draws the number of frames shown in the last second in the top-left corner.
++ */
++static void
++sweet_fb_hosted_done(uintptr_t pixels, uint32_t width, uint32_t height, uint32_t rowBytes, bool shown, uint64_t tick)
++{
++	static const uint8_t digits[10][7] = {  /* 5x7, one byte per row, bit 4 = leftmost column */
++		{0x0e,0x11,0x13,0x15,0x19,0x11,0x0e}, {0x04,0x0c,0x04,0x04,0x04,0x04,0x0e}, {0x0e,0x11,0x01,0x02,0x04,0x08,0x1f},
++		{0x1f,0x02,0x04,0x02,0x01,0x11,0x0e}, {0x02,0x06,0x0a,0x12,0x1f,0x02,0x02}, {0x1f,0x10,0x1e,0x01,0x01,0x11,0x0e},
++		{0x06,0x08,0x10,0x1e,0x11,0x11,0x0e}, {0x1f,0x01,0x02,0x04,0x08,0x08,0x08}, {0x0e,0x11,0x11,0x0e,0x11,0x11,0x0e},
++		{0x0e,0x11,0x11,0x0f,0x01,0x02,0x0c},
++	};
++	static int show = -1;
++	static uint64_t since, frames, fps;
++	enum { S = 5, X0 = 24, Y0 = 90 };
++
++	if (show < 0) {
++		uint32_t on = 0;
++		show = PE_parse_boot_argn("sweetfb_fps", &on, sizeof(on)) && on;
++	}
++	frames += shown ? 1 : 0;
++	if (tick - since >= 60) {
++		fps = frames;
++		frames = 0;
++		since = tick;
++	}
++	if (show && width >= X0 + 12 * S && height >= Y0 + 8 * S) {
++		unsigned v = fps > 99 ? 99 : (unsigned)fps;
++		unsigned d[2] = { v / 10, v % 10 };
++
++		for (unsigned y = Y0 - S; y < Y0 + 8 * S; y++) {
++			uint32_t *row = (uint32_t *)(pixels + (uintptr_t)y * rowBytes);
++			for (unsigned x = X0 - S; x < X0 + 12 * S; x++) {
++				row[x] = 0xff000000;
++			}
++		}
++		for (unsigned i = d[0] ? 0 : 1; i < 2; i++) {
++			for (unsigned r = 0; r < 7 * S; r++) {
++				uint32_t *row = (uint32_t *)(pixels + (uintptr_t)(Y0 + r) * rowBytes);
++				for (unsigned c = 0; c < 5 * S; c++) {
++					if (digits[d[i]][r / S] & (0x10 >> (c / S))) {
++						row[X0 + i * 6 * S + c] = 0xff00ff00;
++					}
++				}
++			}
++		}
++	}
++	uintptr_t a = pixels & ~(uintptr_t)63, end = pixels + (uintptr_t)rowBytes * height;
++	for (; a < end; a += 64) {
++		__asm__ volatile ("dc cvac, %0" :: "r" (a) : "memory");
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++#endif
++
+ void
+ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ {
+@@ -516,6 +581,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 					row[x] = step < 6 ? (row[x] >> 1) & 0x7f7f7f7f : 0;
+ 				}
+ 			}
++#if defined(SWEET_HOSTED)
++			sweet_fb_hosted_done(fb->fPixels, fb->fWidth, fb->fHeight, fb->fRowBytes, false, count);
++#endif
+ 		}
+ 		return;
+ 	}
+@@ -587,6 +655,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 		sweet_fb_wait_frame_window();
+ 		uint64_t t0 = mach_absolute_time();
+ 		fb->present(rec);
++#if defined(SWEET_HOSTED)
++		sweet_fb_hosted_done(fb->fPixels, fb->fWidth, fb->fHeight, fb->fRowBytes, true, count);
++#endif
+ 		sweet_fb_kick_now();
+ 		sweet_fb_last_copy = (uint64_t)count;
+ 		fb->fStatPresentAbs += mach_absolute_time() - t0;
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
 index 5d6b4e5..ea0cd98 100644
 --- a/iokit/Kernel/arm/SweetPlatformExpert.cpp

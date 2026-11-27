@@ -22,7 +22,8 @@ T=$(sed -n 's/.*\breboot=\([0-9]*\).*/\1/p' /proc/cmdline); T=${T:-240}
 (sleep 15; [ -c /dev/watchdog ] && watchdog -T 30 -t 5 /dev/watchdog) &
 
 # no battery-backed clock is read here: the build time of the image is a good enough wall clock (boot-arg epoch=)
-E=$(sed -n 's/.*\bepoch=\([0-9]*\).*/\1/p' /proc/cmdline); [ -n "$E" ] && date -s "@$E" > /dev/null
+# (not one sed pattern: the bootloader makes the command line long and busybox sed's word boundary did not match there)
+E=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^epoch=//p' | tail -n 1); [ -n "$E" ] && date -u -s "@$E" > /dev/null
 
 # coldplug the modules (two passes: the second finds what the first created)
 for pass in 1 2; do

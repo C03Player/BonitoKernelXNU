@@ -1160,6 +1160,11 @@ static int monitor_fn(void *arg)
 	return 0;
 }
 
+/* where the framebuffer is, for a host display service that scans it out directly (host/kmsfb.c) */
+static unsigned long fb_phys, fb_bytes;
+module_param(fb_phys, ulong, 0444);
+module_param(fb_bytes, ulong, 0444);
+
 /* The framebuffer to fb_dump every fb_dump_ms (a host thread: plain Linux context, XNU keeps running on its CPU). */
 static void *fb_thread;
 static int fb_fn(void *arg)
@@ -1208,6 +1213,10 @@ static int enter_arm_init(struct boot_args_v2 *ba)
 			monitor_cpu = host_cpu;
 		if (xnu_dbg && monitor_cpu >= 0)
 			monitor = fki_thread_start(monitor_fn, 0, monitor_cpu, "xnu-monitor");
+		if (fb_off && img.region.va) {
+			fb_bytes = FB_SIZE;
+			fb_phys = img.region.pa + fb_off;
+		}
 		if (fb_off && fb_file && fb_dump_ms > 0 && img.region.va)
 			fb_thread = fki_thread_start(fb_fn, 0, monitor_cpu >= 0 ? monitor_cpu : host_cpu, "xnu-fb");
 	}

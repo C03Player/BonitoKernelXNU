@@ -38,15 +38,26 @@ NET=
 : > /tmp/xnuinput
 pidof evrelay > /dev/null || setsid evrelay /tmp/xnuinput > /tmp/evrelay.log 2>&1 < /dev/null &
 # boot-args the direct port's userland needs (bonito/tools/mkios.sh), without its hardware ones
-A="${XNU_BOOTARGS:+$XNU_BOOTARGS }${NET:+$NET }${GPUARGS:+$GPUARGS }cpus=${XNU_CPUS:-1} keepsyms=1 serial=0 rootrw=1 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
+A="${NET:+$NET }${GPUARGS:+$GPUARGS }cpus=${XNU_CPUS:-4} keepsyms=1 serial=0 rootrw=1 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
 # the hosted display: a framebuffer in XNU's memory, copied to the host's fb0 (the text console lets go of it first)
 for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" $v/name 2>/dev/null && echo 0 > $v/bind; done
 F=
-# (Linux's fbdev has no write path for kernel buffers: xnu.ko writes the frames to a file in RAM, fbcopy shows them)
+# kmsfb scans XNU's framebuffer out directly (XNU draws the frame counter). XNU_DISPLAY=copy: the old path, xnu.ko writes each frame to a
+# file in RAM (Linux's fbdev has no write path for kernel buffers) and fbcopy shows it. With kmsfb the file is for screenshots only.
+FBARGS=
 if [ -c /dev/fb0 ]; then
 	: > /tmp/xnufb
-	F="fb_width=1080 fb_height=2160 fb_dump=/tmp/xnufb fb_dump_ms=33"
-	pidof fbcopy > /dev/null || setsid fbcopy /tmp/xnufb > /dev/null 2>&1 < /dev/null &
+	if [ "${XNU_DISPLAY:-kms}" = kms ] && command -v kmsfb > /dev/null; then
+		F="fb_width=1080 fb_height=2160 fb_dump=/tmp/xnufb fb_dump_ms=1000"
+		FBARGS="sweetfb_hz=60 sweetfb_fps=1"
+	else
+		F="fb_width=1080 fb_height=2160 fb_dump=/tmp/xnufb fb_dump_ms=33"
+		pidof fbcopy > /dev/null || setsid fbcopy /tmp/xnufb > /dev/null 2>&1 < /dev/null &
+	fi
 fi
-setsid insmod /hosted/xnu.ko $F $G input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-1} ram_mb=1536 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+A="${FBARGS:+$FBARGS }$A"
+# XNU_BOOTARGS first: the first occurrence of a boot-arg counts
+A="${XNU_BOOTARGS:+$XNU_BOOTARGS }$A"
+setsid insmod /hosted/xnu.ko $F $G input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=1536 monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+[ -n "$FBARGS" ] && { pidof kmsfb > /dev/null || setsid kmsfb > /tmp/kmsfb.log 2>&1 < /dev/null & }
 echo started

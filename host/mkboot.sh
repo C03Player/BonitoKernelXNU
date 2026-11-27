@@ -21,6 +21,7 @@ install -m755 host/initramfs/report "$R/bin/report"
 gcc -static -Os -s -o "$R/bin/rebootto" host/rebootto.c
 gcc -static -O2 -s -o "$R/bin/fbcopy" host/fbcopy.c
 gcc -static -O2 -s -o "$R/bin/evrelay" host/evrelay.c
+gcc -static -O2 -s -I"${KHDR:-/usb/work/linux/hdr/include}" -o "$R/bin/kmsfb" host/kmsfb.c
 gcc -static -O2 -s -I"${KHDR:-/usb/work/linux/hdr/include}" -o "$R/bin/adrenod" host/gpu/adrenod.c
 make -s -C "$SRC" O="$K" ARCH=arm64 INSTALL_MOD_PATH="$PWD/$R" INSTALL_MOD_STRIP=1 modules_install >/dev/null
 # drop module trees that gate 1 does not need, to fit the 64 MiB boot partition
