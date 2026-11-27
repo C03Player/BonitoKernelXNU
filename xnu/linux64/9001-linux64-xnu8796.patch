@@ -1415,10 +1415,10 @@ index d405964..3033246 100644
  static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
  static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index bb2a2bf..ef61093 100644
+index bb2a2bf..55378bd 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -405,6 +405,69 @@ void (*unmountroot_pre_hook)(void);
+@@ -405,6 +405,77 @@ void (*unmountroot_pre_hook)(void);
  #endif
  void set_rootvnode(vnode_t);
  
@@ -1475,6 +1475,14 @@ index bb2a2bf..ef61093 100644
 +		sweet_plugin_write("/private/var/local/mtl2-tu-debug", "default\n");     /* leaves TU_DEBUG and MESA_LOG_FILE to mtl2-env */
 +		sweet_plugin_write("/private/var/local/mtl2-env", "TU_DEBUG=sysmem\nMESA_LOG_FILE=/dev/console\n");
 +	}
++	{	/* sweettudebug=flag,flag: Turnip's TU_DEBUG for the GPU clients (for example flushall,syncdraw,noubwc) */
++		char flags[64], env[96];
++		if (PE_parse_boot_arg_str("sweettudebug", flags, sizeof(flags))) {
++			snprintf(env, sizeof(env), "TU_DEBUG=%s\n", flags);
++			sweet_plugin_write("/private/var/local/mtl2-tu-debug", "default\n");   /* leaves TU_DEBUG to mtl2-env */
++			sweet_plugin_write("/private/var/local/mtl2-env", env);
++		}
++	}
 +	if (sweet_plugin_flag("sweetfullarea")) {       /* the bridge's partial render areas off */
 +		sweet_plugin_write("/private/var/local/mtl2-env", "SWEET_FULL_AREA=1\n");
 +	}
@@ -1488,7 +1496,7 @@ index bb2a2bf..ef61093 100644
  extern lck_rw_t rootvnode_rw_lock;
  
  SECURITY_READ_ONLY_LATE(struct mach_vm_range) bsd_pageable_range = {};
-@@ -1043,6 +1106,23 @@ bsd_init(void)
+@@ -1043,6 +1114,23 @@ bsd_init(void)
  	bsd_init_kprintf("calling siginit\n");
  	siginit(kernproc);
  
