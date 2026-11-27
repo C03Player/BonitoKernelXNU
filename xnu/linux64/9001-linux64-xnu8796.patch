@@ -2209,7 +2209,7 @@ index 2545cf9..9a9f5de 100644
  	uint64_t mpidr = topology->cpus[logical].phys_id;
  	unsigned int aff0 = mpidr & 0xff;
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 58b5644..c897da0 100644
+index 58b5644..0daecc2 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -34,6 +34,7 @@
@@ -2249,7 +2249,7 @@ index 58b5644..c897da0 100644
  	{
  		extern uintptr_t sweet_fb_pixels_va;       /* bsd/dev/sweet_ufs.c: framebuffer snapshots (sweetshot=SECS) read the panel through this */
  		sweet_fb_pixels_va = fPixels;
-@@ -424,12 +440,19 @@ AppleCLCD::start(IOService *provider)
+@@ -424,17 +440,27 @@ AppleCLCD::start(IOService *provider)
  	{
  		uint32_t kick = 0;
  		PE_parse_boot_argn("sweetfb_kick", &kick, sizeof(kick));
@@ -2269,7 +2269,15 @@ index 58b5644..c897da0 100644
  		if (probe != 0 || sweet_fb_sync_start != 0) {
  			sweet_fb_probe_init();
  		}
-@@ -446,6 +469,63 @@ AppleCLCD::start(IOService *provider)
+ 	}
+ 
++#if defined(SWEET_HOSTED)
++	sweet_backlight_publish(this);
++#endif
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+ 	setProperty("external", false);
+ 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
+@@ -446,6 +472,130 @@ AppleCLCD::start(IOService *provider)
  
  static uint64_t sweet_fb_swap_count;
  
@@ -2301,7 +2309,7 @@ index 58b5644..c897da0 100644
 +		frames = 0;
 +		since = tick;
 +	}
-+	if (show && width >= X0 + 12 * S && height >= Y0 + 8 * S) {
++	if (show && shown && width >= X0 + 12 * S && height >= Y0 + 8 * S) {     /* not while the screen fades out */
 +		unsigned v = fps > 99 ? 99 : (unsigned)fps;
 +		unsigned d[2] = { v / 10, v % 10 };
 +
@@ -2330,10 +2338,77 @@ index 58b5644..c897da0 100644
 +}
 +#endif
 +
++#if defined(SWEET_HOSTED)
++/*
++ * LINUX64: the screen's brightness. backboardd looks for a service with the property "backlight-control"; this one offers the classic
++ * IODisplayParameters and says what is asked of it ("SWEET BACKLIGHT: ..."), for the host to set its panel's backlight.
++ */
++class SweetBacklight : public IOService {
++	OSDeclareDefaultStructors(SweetBacklight);
++public:
++	virtual IOReturn setProperties(OSObject *properties) APPLE_KEXT_OVERRIDE;
++};
++OSDefineMetaClassAndStructors(SweetBacklight, IOService);
++
++IOReturn
++SweetBacklight::setProperties(OSObject *properties)
++{
++	static unsigned said;
++	OSSerialize *ser = OSSerialize::withCapacity(256);
++
++	if (said++ < 40 && ser != NULL && properties != NULL && properties->serialize(ser)) {
++		IOLog("SWEET BACKLIGHT: set %.400s\n", ser->text());
++	}
++	OSSafeReleaseNULL(ser);
++	return kIOReturnSuccess;
++}
++
++static void
++sweet_backlight_publish(IOService *provider)
++{
++	SweetBacklight *b = OSTypeAlloc(SweetBacklight);
++	OSDictionary *all, *one;
++	static const char *const names[] = { "brightness", "rawBrightness" };
++
++	if (b == NULL || !b->init() || !b->attach(provider)) {
++		OSSafeReleaseNULL(b);
++		return;
++	}
++	all = OSDictionary::withCapacity(2);
++	for (unsigned i = 0; all != NULL && i < 2; i++) {
++		static const char *const keys[] = { "min", "max", "value" };
++		static const unsigned values[] = { 0, 65535, 65535 };
++
++		one = OSDictionary::withCapacity(3);
++		for (unsigned k = 0; one != NULL && k < 3; k++) {
++			OSNumber *n = OSNumber::withNumber((unsigned long long)values[k], 32);
++			if (n != NULL) {
++				one->setObject(keys[k], n);
++				n->release();
++			}
++		}
++		if (one != NULL) {
++			all->setObject(names[i], one);
++			one->release();
++		}
++	}
++	if (all != NULL) {
++		b->setProperty("IODisplayParameters", all);
++		all->release();
++	}
++	b->setProperty("backlight-control", kOSBooleanTrue);
++	b->setName("SweetBacklight");
++	if (b->start(provider)) {
++		b->registerService();
++	}
++	b->release();
++}
++#endif
++
  void
  AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  {
-@@ -516,6 +596,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -516,6 +666,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  					row[x] = step < 6 ? (row[x] >> 1) & 0x7f7f7f7f : 0;
  				}
  			}
@@ -2343,7 +2418,7 @@ index 58b5644..c897da0 100644
  		}
  		return;
  	}
-@@ -587,6 +670,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -587,6 +740,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  		sweet_fb_wait_frame_window();
  		uint64_t t0 = mach_absolute_time();
  		fb->present(rec);
