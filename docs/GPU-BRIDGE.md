@@ -80,3 +80,10 @@ Open: the Photos widget is black.
 
 Debug switches: `XNU_MESALOG=1 xnu-run` (Turnip's messages on the console), `ADRENOD_V=-vv`, `ADRENOD_DUMP=1`; `host/gpu/vatest.c` writes to
 high GPU addresses from Linux alone.
+
+## GPU clock above 430 MHz (tried 2026-11-27, does not work)
+
+This phone's speed grade (bin 0) is rated for 430 MHz in the stock and mainline clock tables. Enabling the 504 MHz entry for it (bit 0
+of `opp-supported-hw` in the device tree) left the GPU unable to start: `gpu hw init failed`, `GMU firmware fault`, no frames (one boot;
+the next boot at 430 MHz was fine). The option was removed again. Baseline at 430 MHz, scrolling Settings with injected swipes: 11.6
+frames per second over 7 five-second windows, hottest sensor 52.5 C.
