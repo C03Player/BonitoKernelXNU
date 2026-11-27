@@ -2815,7 +2815,7 @@ index 5d6b4e5..ea0cd98 100644
  
  const char *
 diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
-index c5e2d5c..f31bc4a 100644
+index c5e2d5c..efc4e7d 100644
 --- a/iokit/Kernel/arm/SweetSurface.cpp
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
 @@ -25,6 +25,7 @@
@@ -2839,6 +2839,34 @@ index c5e2d5c..f31bc4a 100644
  	if (s->memory == NULL || !sweet_surface_publish(s)) {
  		s->release();
  		return NULL;
+@@ -423,6 +429,27 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 	if (alloc < end) {
+ 		alloc = end;
+ 	}
++	/*
++	 * Boot-args sweetsurfrows=N and sweetsurfslack=KB (both off by default): room behind a one-plane surface's pixels, up to a height that
++	 * is a multiple of N rows and then KB more. A test for web layers whose pixel height is no multiple of 4: they come up black.
++	 */
++	static int rows = -1, slack;
++	if (rows < 0) {
++		uint32_t r = 0, k = 0;
++		PE_parse_boot_argn("sweetsurfslack", &k, sizeof(k));
++		slack = (int)(k > 1024 ? 1024 : k);
++		rows = PE_parse_boot_argn("sweetsurfrows", &r, sizeof(r)) && r <= 256 ? (int)r : 0;
++	}
++	if (s->planeCount == 0 && (rows > 1 || slack > 0)) {
++		uint32_t lines = sweet_div_up(s->height, s->elementHeight);
++		if (rows > 1) {
++			lines = sweet_div_up(lines, (uint32_t)rows) * (uint32_t)rows;
++		}
++		uint64_t room = (uint64_t)s->offset + (uint64_t)s->bytesPerRow * lines + (uint64_t)slack * 1024;
++		if (alloc < room) {
++			alloc = room;
++		}
++	}
+ 	alloc = round_page(alloc);
+ 	if (alloc == 0 || alloc > SWEET_SURFACE_MAX_ALLOC) {
+ 		return kIOReturnNoMemory;
 diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
 index ae562be..cc7f82f 100644
 --- a/iokit/Kernel/arm/hid/SweetHID.cpp
