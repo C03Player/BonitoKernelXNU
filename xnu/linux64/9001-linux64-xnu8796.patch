@@ -2022,7 +2022,7 @@ index 89d8840..54516fb 100644
 +	controller->release();
 +}
 diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
-index 7fb6243..8b4c52d 100644
+index 7fb6243..f77644e 100644
 --- a/iokit/Kernel/arm/SweetAccelerator.cpp
 +++ b/iokit/Kernel/arm/SweetAccelerator.cpp
 @@ -35,6 +35,28 @@
@@ -2075,7 +2075,17 @@ index 7fb6243..8b4c52d 100644
  class SweetAccelerator : public IOAcceleratorES {
  	OSDeclareDefaultStructors(SweetAccelerator);
  
-@@ -156,8 +185,13 @@ class SweetAcceleratorUserClient : public IOUserClient {
+@@ -147,6 +176,9 @@ class SweetAcceleratorUserClient : public IOUserClient {
+ 	SweetV2BO *fBO;
+ 	uint32_t fBOCap;
+ 	uint64_t *fPageBuf;
++#if defined(SWEET_HOSTED)
++	OSArray *fOld;          /* descriptors replaced by a re-import: still prepared until the client closes */
++#endif
+ 	uint64_t fEpoch, fFaults;       /* GPU resets seen; those that lost this client's work */
+ 	uint64_t fPoolBytes, fPoolPeak; /* GPU pool memory this client holds */
+ 	char fName[32];
+@@ -156,8 +188,13 @@ class SweetAcceleratorUserClient : public IOUserClient {
  
  	int addMemory(IOMemoryDescriptor *md, uint64_t *handle, uint64_t *va);
  	IOReturn v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize);
@@ -2089,7 +2099,25 @@ index 7fb6243..8b4c52d 100644
  	void v2Release(SweetV2BO *bo);
  
  public:
-@@ -619,6 +653,106 @@ sweet_pool_release(IOMemoryDescriptor *md, uint64_t pa)
+@@ -265,6 +302,17 @@ SweetAcceleratorUserClient::free(void)
+ 		IODelete(fPageBuf, uint64_t, SWEET_V2_PAGEBUF);
+ 		fPageBuf = NULL;
+ 	}
++#if defined(SWEET_HOSTED)
++	if (fOld != NULL) {
++		for (unsigned i = 0; i < fOld->getCount(); i++) {
++			IOMemoryDescriptor *md = OSDynamicCast(IOMemoryDescriptor, fOld->getObject(i));
++			if (md != NULL) {
++				md->complete();
++			}
++		}
++		OSSafeReleaseNULL(fOld);
++	}
++#endif
+ 	if (fWinSize != 0) {
+ 		sweet_gpu_window_free(fWinBase);
+ 		fWinSize = 0;
+@@ -619,6 +667,112 @@ sweet_pool_release(IOMemoryDescriptor *md, uint64_t pa)
  	IOLockUnlock(sweet_zombie_lock);
  }
  
@@ -2129,7 +2157,7 @@ index 7fb6243..8b4c52d 100644
 +	static uint64_t moved, checks;
 +	if (remap < 0) {
 +		uint32_t v = 0;
-+		remap = PE_parse_boot_argn("sweetgpuremap", &v, sizeof(v)) && v;
++		remap = PE_parse_boot_argn("sweetgpuremap", &v, sizeof(v)) ? (int)v : 0;
 +	}
 +	struct pmap *pmap = get_task_pmap(fTask);
 +	if ((++checks & 1023) == 0) {
@@ -2183,8 +2211,14 @@ index 7fb6243..8b4c52d 100644
 +		if (v2MapPages(md, bo->bytes, bo->iova) != kIOReturnSuccess) {
 +			IOLog("SWEET MTL: v2 %s: mapping 0x%llx again failed\n", fName, bo->uaddr);
 +		}
-+		STEP("release old");
-+		bo->md->complete();
++		/* sweetgpuremap=1: the old pages stay pinned until the client closes (the screen froze soon after releasing them); 2: released now */
++		if (remap == 1 && fOld == NULL) {
++			fOld = OSArray::withCapacity(64);
++		}
++		if (remap != 1 || fOld == NULL || !fOld->setObject(bo->md)) {
++			STEP("release old");
++			bo->md->complete();
++		}
 +		bo->md->release();
 +		bo->md = md;
 +		STEP("done");
@@ -2196,14 +2230,14 @@ index 7fb6243..8b4c52d 100644
  /* Unmap from the GPU, unwire, drop (pool memory: once no task maps it any more) */
  void
  SweetAcceleratorUserClient::v2Release(SweetV2BO *bo)
-@@ -639,8 +773,30 @@ SweetAcceleratorUserClient::v2Release(SweetV2BO *bo)
+@@ -639,8 +793,30 @@ SweetAcceleratorUserClient::v2Release(SweetV2BO *bo)
  	bzero(bo, sizeof(*bo));
  }
  
 +#if defined(SWEET_HOSTED)
 +/* LINUX64: every failed request is logged (GPU bridge bring-up: what made Turnip declare the device lost) */
-+IOReturn
-+SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
+ IOReturn
+ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
 +{
 +	IOReturn r = v2MethodBody(method, in, inSize, out, outSize);
 +	if (r != kIOReturnSuccess && !(method == NativeAdrenoMethodWaitFence && r == kIOReturnTimeout)) {
@@ -2215,8 +2249,8 @@ index 7fb6243..8b4c52d 100644
 +	return r;
 +}
 +#else
- IOReturn
- SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
++IOReturn
++SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
 +{
 +	return v2MethodBody(method, in, inSize, out, outSize);
 +}
@@ -2227,7 +2261,7 @@ index 7fb6243..8b4c52d 100644
  {
  	static uint32_t logged;
  #define V2_IN(T)        if (in == NULL || inSize != sizeof(T)) return kIOReturnBadArgument; const T *rq = (const T *)in
-@@ -746,6 +902,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+@@ -746,6 +922,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
  		IOLockLock(fLock);
  		uint64_t h = 0;
  		IOReturn r = v2NewSlot(md, rq->bytes, true, &h);
@@ -2237,7 +2271,7 @@ index 7fb6243..8b4c52d 100644
  		IOLockUnlock(fLock);
  		if (r != kIOReturnSuccess) {
  			md->complete();
-@@ -771,22 +930,8 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+@@ -771,22 +950,8 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
  		} else if (rq->iova < fWinBase || rq->iova + bo->bytes > fWinBase + fWinSize || rq->iova + bo->bytes < rq->iova) {
  			r = kIOReturnBadArgument;
  		}
@@ -2262,7 +2296,7 @@ index 7fb6243..8b4c52d 100644
  		}
  		if (r == kIOReturnSuccess) {
  			bo->iova = rq->iova;
-@@ -842,6 +987,41 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+@@ -842,6 +1007,41 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
  		if (rq->wait_fence != 0 && sweet_gpu_wait_fence_ns((uint32_t)rq->wait_fence, rq->wait_timeout_ns)) {
  			return kIOReturnTimeout;
  		}
@@ -2304,7 +2338,31 @@ index 7fb6243..8b4c52d 100644
  		bool busy = false;
  		uint32_t fence = sweet_gpu_submit_v2(iova, dw, rq->buffer_count, &busy);
  		if (fence == 0) {
-@@ -864,6 +1044,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+@@ -853,7 +1053,23 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+ 	}
+ 	case NativeAdrenoMethodWaitFence: {
+ 		V2_IN(NativeAdrenoAbiWaitFence);
++#if defined(SWEET_HOSTED)
++		{
++			uint64_t began = mach_absolute_time(), ns = 0;
++			int timedOut = sweet_gpu_wait_fence_ns((uint32_t)rq->fence, rq->timeout_ns);
++			absolutetime_to_nanoseconds(mach_absolute_time() - began, &ns);
++			if (ns >= 1000000000ull) {
++				static unsigned told;
++				if (told++ < 32) {
++					IOLog("SWEET MTL: v2 %s: wait for fence %llu took %llu ms%s\n", fName, (uint64_t)rq->fence, ns / 1000000,
++					    timedOut ? ", still pending" : "");
++				}
++			}
++			return timedOut ? kIOReturnTimeout : kIOReturnSuccess;
++		}
++#else
+ 		return sweet_gpu_wait_fence_ns((uint32_t)rq->fence, rq->timeout_ns) ? kIOReturnTimeout : kIOReturnSuccess;
++#endif
+ 	}
+ 	case NativeAdrenoMethodGetTimestamp: {
+ 		V2_OUT(NativeAdrenoAbiTimestamp);
+@@ -864,6 +1080,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
  		V2_OUT(NativeAdrenoAbiStatus);
  		if (sweet_gpu_lost(&fEpoch, fLastFence)) {
  			fFaults++;
