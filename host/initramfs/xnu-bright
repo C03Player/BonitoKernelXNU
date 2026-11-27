@@ -1,0 +1,28 @@
+#!/bin/sh
+# xnu-bright [KMSG]: set the panel's backlight to what iOS asks for. The kernel log carries "SWEET BRIGHTNESS: <8 hex digits>", the bits of
+# the level as a float from 0 to 1 (host/iosbright.py). The panel gets the level squared (the eye reads that as even steps), never below 4
+# of 1023, so that the screen cannot go black.
+B=${BACKLIGHT:-$(ls -d /sys/class/backlight/* 2>/dev/null | head -n 1)}
+[ -n "$B" ] || { echo "xnu-bright: no backlight"; exit 1; }
+max=$(cat $B/max_brightness)
+level() {	# 8 hex digits -> 0..1000
+	bits=$((0x$1))
+	e=$(((bits >> 23) & 255))
+	if [ $bits -lt 0 ] || [ $((bits >> 31)) -ne 0 ] || [ $e -lt 107 ]; then echo 0
+	elif [ $e -ge 127 ]; then echo 1000
+	else echo $(((((bits & 0x7fffff) | 0x800000) * 1000) >> (150 - e)))
+	fi
+}
+cat ${1:-/dev/kmsg} | while read -r line; do
+	case "$line" in
+	*"SWEET BRIGHTNESS: "????????) ;;
+	*) continue ;;
+	esac
+	h=${line##*SWEET BRIGHTNESS: }
+	case "$h" in *[!0-9a-f]*) continue ;; esac
+	l=$(level "$h")
+	v=$((l * l / 1000 * max / 1000))
+	[ $v -lt 4 ] && v=4
+	[ $v -gt $max ] && v=$max
+	echo $v > $B/brightness
+done

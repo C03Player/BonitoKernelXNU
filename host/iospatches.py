@@ -14,6 +14,8 @@ AMFI accepts the changed signature.
 """
 import hashlib, mmap, os, struct, subprocess, sys
 
+import iosbright
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../bonito/tools'))
 from dsc import DSC
 
@@ -23,8 +25,15 @@ PATCHES = [
     # 360-point screen the view starts 320 points wide, so every switch to "123" was undone and the keys sat 20 points to the right.
     # "fcmp d2, d11" (old width, new width) becomes "fcmp d11, d11": only a change of height reloads.
     (0x18911c494, 0x1e6b2040, 0x1e6b2160, 'keyboard: 123 key, shifted keys'),
+    # _BKSDisplayBrightnessSet's first instruction ("stp d9, d8, [sp, #-48]!") becomes a branch to the routine of host/iosbright.py
+    (iosbright.FUNCTION, 0x6dbd23e9, 0x14000000 | (((iosbright.CAVE - iosbright.FUNCTION) >> 2) & 0x3ffffff), 'brightness: report the level'),
 ]
 
+
+# code added to iOS: (unslid address, bytes, why); the place must be code that never runs
+BLOCKS = [
+    (iosbright.CAVE, iosbright.CODE, 'brightness: report the level (host/iosbright.py)'),
+]
 
 FILE_PATCHES = [
     # (file on the root disk, file offset, original instruction, replacement, why)
@@ -124,29 +133,41 @@ def main():
                 hints[key] = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ).find(sig)
         return hints.get(key, -1)
 
-    targets = []	# (file with the bytes, offset in it, original instruction, replacement, why)
+    targets = []	# (file with the bytes, file name on the root disk, offset of the signature, its length, offset in it, replacement, why)
     for va, old, new, why in PATCHES:
         path, offset = locate(cache, va)
-        targets.append((path, offset, old, new, why, None))
+        if struct.unpack('<I', cache.read(va, 4))[0] != old:
+            sys.exit('%s: 0x%x holds another instruction: not the iOS this patch was written for' % (why, va))
+        targets.append((path, '/System/Library/Caches/com.apple.dyld/' + os.path.basename(path), offset - 12, 24, 12, struct.pack('<I', new), why))
+    for va, code, why in BLOCKS:
+        for at in range(0, len(code), 56):
+            part = code[at:at + 56]
+            path, offset = locate(cache, va + at)
+            targets.append((path, '/System/Library/Caches/com.apple.dyld/' + os.path.basename(path), offset, len(part), 0, part, why))
     for name, offset, old, new, why in FILE_PATCHES:
-        targets.append((local_copy(name, image, os.path.join(os.path.dirname(os.path.abspath(out)), 'ios-files')), offset, old, new, why, name))
+        path = local_copy(name, image, os.path.join(os.path.dirname(os.path.abspath(out)), 'ios-files'))
+        with open(path, 'rb') as f:
+            f.seek(offset)
+            if struct.unpack('<I', f.read(4))[0] != old:
+                sys.exit('%s: %s holds another instruction at 0x%x: not the file this patch was written for' % (why, path, offset))
+        targets.append((path, name, offset - 12, 24, 12, struct.pack('<I', new), why))
 
     lines = []
     pages = {}	# (file, hash offset) -> (page offset, bytes hashed, [(offset, replacement)], offset and hint of one instruction)
-    for path, offset, old, new, why, name in targets:
+    for path, name, start, length, at, new, why in targets:
         with open(path, 'rb') as f:
-            f.seek(offset - 12)
-            sig = f.read(24)
-        if struct.unpack_from('<I', sig, 12)[0] != old:
-            sys.exit('%s: %s holds another instruction at 0x%x: not the file this patch was written for' % (why, path, offset))
-        if name and sig.hex() not in hints:
-            found = on_disk(image, name, offset - 12)
-            if found >= 0 and os.pread(os.open(image, os.O_RDONLY), len(sig), found) == sig:
+            f.seek(start)
+            sig = f.read(length)
+        if sig.hex() not in hints:
+            found = on_disk(image, name, start)
+            if found >= 0 and image and os.pread(os.open(image, os.O_RDONLY), len(sig), found) == sig:
                 hints[sig.hex()] = found
-        hint = search(sig, scan=not name)	# a file newer than the image's is not in the image: no point looking
-        lines.append('%d %s 12 %s\n' % (hint, sig.hex(), struct.pack('<I', new).hex()))
-        entry, page, size = page_hash(path, offset)
-        pages.setdefault((path, entry), (page, size, [], offset - 12, hint, name))[2].append((offset, struct.pack('<I', new)))
+        hint = search(sig, scan=False)
+        lines.append('%d %s %d %s\n' % (hint, sig.hex(), at, new.hex()))
+        entry, page, size = page_hash(path, start + at)
+        if (start + at + len(new) - 1) >= page + size:
+            sys.exit('%s: a change that crosses a signed page' % why)
+        pages.setdefault((path, entry), (page, size, [], start, hint, name))[2].append((start + at, new))
     for (path, entry), (page, size, changes, near, near_hint, name) in pages.items():
         with open(path, 'rb') as f:
             f.seek(page)
@@ -156,7 +177,7 @@ def main():
         if hashlib.sha256(data).digest() != old:
             sys.exit('%s: the signature does not match the page at 0x%x' % (path, page))
         for offset, word in changes:
-            data[offset - page:offset - page + 4] = word
+            data[offset - page:offset - page + len(word)] = word
         # the file is normally in one piece on the disk, so the hash sits at the same distance from the instruction
         hint = near_hint + entry - near if near_hint >= 0 else -1
         if hint >= 0 and image and os.path.exists(image):

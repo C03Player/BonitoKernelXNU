@@ -29,6 +29,14 @@ Metal runtime still holds a GPU import of that address, and the runtime reused i
 phone (21,603,472 bytes), which is newer than the one in the local disk image: `host/iospatches.py` says how to get such a file and its
 device offsets.
 
+## Screen brightness (2026-11-27)
+
+The kernel's brightness service (`sweetbacklight=1`) stalls the display after a few frames, so iOS has no backlight device. Instead
+`_BKSDisplayBrightnessSet`, which the Settings slider calls, branches to a routine placed in iPad-only code (`host/iosbright.py`) that
+opens `/sweetbr<float bits in hex>`; the kernel prints it (`SWEET BRIGHTNESS`) and `host/initramfs/xnu-bright` sets the panel (level
+squared, 4..1023). Verified: the Settings slider moved the panel from 1023 to 123 and back. Control Center's slider did not respond to
+injected touches (before the patch either), so it is untested. The panel starts at full brightness at each boot until a slider is moved.
+
 ## Finding such a fault
 
 No debugger runs on the hosted iOS, but its code can be changed in RAM while it runs, and the kernel log reports every user crash with the
@@ -36,7 +44,8 @@ fault address.
 
 1. Disassemble the suspect method from the shared cache (`bonito/tools/objc.py`, `dsc.py`).
 2. Build `host/sweetpoke` (`make -C /usb/work/linux/out M=$PWD/host/sweetpoke ARCH=arm64 modules`) and copy the module to the phone's `/tmp`.
-3. `host/iospoke.py on ADDR INSN` replaces an instruction, `off` restores it. Useful probes: `ldr xzr, [xN]` (`f940001f` for x0) crashes
+3. `host/iospoke.py on ADDR INSN` replaces an instruction, `off` restores it. It looks first and refuses a spot that matches many places
+   (a function's first instructions do: one such patch hit 403). Code pages can be read from disk again, which drops a patch. Useful probes: `ldr xzr, [xN]` (`f940001f` for x0) crashes
    with the fault address equal to the register; `br xN` does the same for any value and shows that the place was reached. For a double,
    `fmov x9, dN` followed by `br x9` (the top byte of the address is not reported).
 4. The app dies and restarts; read `sub 0x...` in the `CRASH` line (`host/klog.py` keeps only 10 minutes per run).
