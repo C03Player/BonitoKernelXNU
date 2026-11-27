@@ -1411,10 +1411,10 @@ index d405964..3033246 100644
  static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
  static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index bb2a2bf..bb2dd78 100644
+index bb2a2bf..24fa986 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -405,6 +405,48 @@ void (*unmountroot_pre_hook)(void);
+@@ -405,6 +405,57 @@ void (*unmountroot_pre_hook)(void);
  #endif
  void set_rootvnode(vnode_t);
  
@@ -1423,20 +1423,29 @@ index bb2a2bf..bb2dd78 100644
 +#include <sys/vnode.h>
 +
 +/*
-+ * LINUX64, debugging (boot-arg sweetmesalog=1): Turnip's own messages on the console. SweetMetal2 reads these two files when a process
-+ * opens the GPU. Written from here because Linux mounts the not cleanly unmounted root only read-only. Retried until the root is writable.
++ * LINUX64: files of the root that the Metal plugin (SweetMetal2) reads when a process opens the GPU. Written from here because Linux mounts
++ * the not cleanly unmounted root only read-only; retried until the root is writable.
++ *   mtl2-clients: who besides backboardd gets a Metal device. The direct port's list plus WebKit's processes: without them Safari's pages
++ *   were black (com.apple.WebKit.GPU "not listed: no Metal device").
++ *   With boot-arg sweetmesalog=1 also mtl2-tu-debug and mtl2-env: Turnip's own messages on the console.
 + */
 +static void
-+sweet_mesalog_thread(void *arg __unused, wait_result_t wr __unused)
++sweet_plugin_files_thread(void *arg __unused, wait_result_t wr __unused)
 +{
 +	static const struct { const char *path, *text; } files[] = {
-+		{ "/private/var/local/mtl2-tu-debug", "default\n" },	/* leaves TU_DEBUG and MESA_LOG_FILE to the next file */
++		{ "/private/var/local/mtl2-clients",
++		  "SpringBoard chronod PosterBoard AegirPoster CollectionsPoster com.apple.WebKit.GPU com.apple.WebKit.WebContent\n" },
++		{ "/private/var/local/mtl2-tu-debug", "default\n" },     /* leaves TU_DEBUG and MESA_LOG_FILE to the next file */
 +		{ "/private/var/local/mtl2-env", "TU_DEBUG=sysmem\nMESA_LOG_FILE=/dev/console\n" },
 +	};
-+	unsigned done = 0;
++	uint32_t mesalog = 0;
++	unsigned done = 0, count = 1;
 +	int error = 0;
 +
-+	for (int tries = 0; tries < 600 && done < 2; tries++) {
++	if (PE_parse_boot_argn("sweetmesalog", &mesalog, sizeof(mesalog)) && mesalog) {
++		count = 3;
++	}
++	for (int tries = 0; tries < 600 && done < count; tries++) {
 +		vfs_context_t ctx = vfs_context_current();
 +		vnode_t vp = NULLVP;
 +
@@ -1446,15 +1455,15 @@ index bb2a2bf..bb2dd78 100644
 +			    UIO_SYSSPACE, 0, vfs_context_ucred(ctx), NULL, vfs_context_proc(ctx));
 +			vnode_close(vp, FWRITE, ctx);
 +			if (error == 0) {
-+				printf("SWEET mesalog: wrote %s (try %d)\n", files[done].path, tries);
++				printf("SWEET plugin files: wrote %s (try %d)\n", files[done].path, tries);
 +				done++;
 +				continue;
 +			}
 +		}
 +		delay_for_interval(100, NSEC_PER_MSEC);
 +	}
-+	if (done < 2) {
-+		printf("SWEET mesalog: could not write %s: %d\n", files[done].path, error);
++	if (done < count) {
++		printf("SWEET plugin files: could not write %s: %d\n", files[done].path, error);
 +	}
 +	thread_terminate(current_thread());
 +}
@@ -1463,17 +1472,15 @@ index bb2a2bf..bb2dd78 100644
  extern lck_rw_t rootvnode_rw_lock;
  
  SECURITY_READ_ONLY_LATE(struct mach_vm_range) bsd_pageable_range = {};
-@@ -1043,6 +1085,25 @@ bsd_init(void)
+@@ -1043,6 +1094,23 @@ bsd_init(void)
  	bsd_init_kprintf("calling siginit\n");
  	siginit(kernproc);
  
 +#if defined(SWEET_HOSTED)
 +	{
-+		uint32_t on = 0;
 +		thread_t t;
 +
-+		if (PE_parse_boot_argn("sweetmesalog", &on, sizeof(on)) && on &&
-+		    kernel_thread_start(sweet_mesalog_thread, NULL, &t) == KERN_SUCCESS) {
++		if (kernel_thread_start(sweet_plugin_files_thread, NULL, &t) == KERN_SUCCESS) {
 +			thread_deallocate(t);
 +		}
 +	}
