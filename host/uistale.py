@@ -59,6 +59,8 @@ for r in range(rounds):
         sys.exit('round %d: the screen did not change after scrolling (frozen?)' % r)
     to_top()
     got = shot('%s/%02d.png' % (out, r))
+    if got[560 * 3241:2040 * 3241] == moved[560 * 3241:2040 * 3241]:
+        sys.exit('round %d: the screen did not change on the way back (frozen?)' % r)
     blocks = corrupt(ref, got)
     if blocks:
         bad += 1
