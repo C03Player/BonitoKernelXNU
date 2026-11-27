@@ -53,6 +53,10 @@ for r in range(rounds):
     for _ in range(2):
         touch('swipe', '540', '1600', '540', '400', '10')
         time.sleep(0.5)
+    time.sleep(2)
+    moved = shot(out + '/scrolled.png')
+    if moved[560 * 3241:2040 * 3241] == ref[560 * 3241:2040 * 3241]:
+        sys.exit('round %d: the screen did not change after scrolling (frozen?)' % r)
     to_top()
     got = shot('%s/%02d.png' % (out, r))
     blocks = corrupt(ref, got)
