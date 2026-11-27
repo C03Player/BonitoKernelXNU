@@ -10,7 +10,7 @@ grep -q '^fki ' /proc/modules || insmod /hosted/fki.ko cpu_list=${XNU_CPU_LIST:-
 G=
 if [ "${XNU_GPU:-1}" = 1 ] && [ -c /dev/dri/renderD128 ]; then
 	pidof adrenod > /dev/null || setsid adrenod ${ADRENOD_V:--v} > /tmp/adrenod.log 2>&1 < /dev/null &
-	G="gpu_pool_mb=256"
+	G="gpu_pool_mb=${XNU_GPU_POOL:-384}"
 	GPUARGS="sweetmtl=2 sweetgpureserve=16${XNU_MESALOG:+ sweetmesalog=1}"
 fi
 # the iOS root: the direct port's HFS+ image on userdata. That partition is the fallback port's and is never written: it is set read-only in
@@ -74,6 +74,6 @@ fi
 A="${FBARGS:+$FBARGS }$A"
 # XNU_BOOTARGS first: the first occurrence of a boot-arg counts
 A="${XNU_BOOTARGS:+$XNU_BOOTARGS }$A"
-setsid insmod /hosted/xnu.ko $F $G $SVC $STATE input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=1536 monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+setsid insmod /hosted/xnu.ko $F $G $SVC $STATE input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=${XNU_RAM:-1408} monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
 [ -n "$FBARGS" ] && { pidof kmsfb > /dev/null || setsid kmsfb > /tmp/kmsfb.log 2>&1 < /dev/null & }
 echo started
