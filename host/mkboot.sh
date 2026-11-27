@@ -76,6 +76,7 @@ if [ -n "${HOSTED_KERNEL:-}" ]; then
 	cp "$HOSTED_KERNEL" "$R/lib/firmware/xnu/kernel.macho"
 	install -m755 host/initramfs/xnu-run "$R/bin/xnu-run"
 	install -m755 host/initramfs/xnu-state "$R/bin/xnu-state"
+	install -m755 host/initramfs/xnu-save "$R/bin/xnu-save"
 	# dmsetup (this machine's, with its libraries) for the writable snapshot of the root disk
 	mkdir -p "$R/dm"
 	D=$(command -v dmsetup)

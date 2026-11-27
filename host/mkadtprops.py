@@ -44,6 +44,10 @@ for i in range(8):
 product = dict(props('product'))
 if 'artwork-device-subtype' in product:
     product['artwork-device-subtype'] = struct.pack('<I', int(os.environ.get('ARTWORK_SUBTYPE', '2436')))
+# The panel is shown as 8-bit sRGB. A wide-gamut (P3) iPhone makes WebKit draw some layers into two-plane 10-bit surfaces ('b3a8'), which
+# the Metal plugin refuses: those layers stayed blank. With sRGB all of Safari's surfaces are BGRA. ARTWORK_GAMUT=P3: the iPhone X's value.
+if 'artwork-display-gamut' in product:
+    product['artwork-display-gamut'] = cstr(os.environ.get('ARTWORK_GAMUT', 'sRGB'))
 out += [('product', k, v) for k, v in product.items() if k not in ('name', 'AAPL,phandle')]
 with open(sys.argv[1], 'wb') as f:
     for node, k, v in out:

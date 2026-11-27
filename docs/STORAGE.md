@@ -1,0 +1,21 @@
+# Storage (hosted)
+
+The iOS volume is the direct port's HFS+ volume (16 GiB) at the start of the `userdata` partition (about 50 GiB). The direct port mounted
+it read-write; the hosted system never writes it. `xnu-run` gives XNU a device-mapper stack:
+
+    partition (iosbase, read-only) -> iosroot: snapshot in RAM, holds the patches to iOS's code (docs/IOS-PATCHES.md)
+                                   -> iossaved: persistent snapshot in the save area
+
+- `host/boot-ios.sh` saves changes (boot-arg `xnusave`). `SAVE=0 host/boot-ios.sh` writes nothing to the phone, as `xnu-run` alone does;
+  `SAVE=reset` throws the saved changes away.
+- The save area is 8 GiB starting 20 GiB into the partition: behind the volume, clear of the last 4 MiB that the direct port's log uses.
+  `xnu-save check` refuses if the volume or the partition does not leave that room.
+- The area's first MiB holds a mark with a hash of the volume's header. If the direct port (or anything else) writes the volume, the saved
+  changes no longer fit it: they are then neither used nor added to until `SAVE=reset`.
+- Linux writes its cache out every 3 seconds. A forced power-off can lose the last moments, and write ordering is not kept as a real disk
+  would keep it: if iOS stops booting from the saved changes, `SAVE=reset`.
+- When the area fills up, the snapshot stops working; `xnu-run` prints how much is used (a first boot used about 100 MiB).
+
+Verified 2026-11-27: Light appearance set in Settings was still set after a reboot without `sync`; `SAVE=reset` brought back the stored
+Dark setting; the volume header's hash was the same on every boot. Not verified: whether the keychain (Wi-Fi passwords) can be read back
+after a reboot (the key store is a software stand-in), long use, a full save area.

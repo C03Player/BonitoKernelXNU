@@ -13,23 +13,37 @@ if [ "${XNU_GPU:-1}" = 1 ] && [ -c /dev/dri/renderD128 ]; then
 	G="gpu_pool_mb=${XNU_GPU_POOL:-384}"
 	GPUARGS="sweetmtl=2 sweetgpureserve=16${XNU_MESALOG:+ sweetmesalog=1}"
 fi
-# the iOS root: the direct port's HFS+ image on userdata. That partition is the fallback port's and is never written: it is set read-only in
-# Linux, and XNU gets a snapshot of it whose changes go to a file in RAM (gone at reboot). XNU_DISK= another partition.
+# the iOS root: the direct port's HFS+ image on userdata. That volume is the fallback port's and is never written: XNU gets a snapshot of it
+# whose changes go to a file in RAM (gone at reboot), or with xnusave also to a save area behind the volume. XNU_DISK= another partition.
 D=${XNU_DISK-/dev/mmcblk0p72}
 H=$(dd if="$D" bs=1 skip=1024 count=2 2>/dev/null)
 DISK=
+DM="/dm/ld-linux-aarch64.so.1 --library-path /dm /dm/dmsetup"
+# saved changes (boot-arg xnusave, set by host/boot-ios.sh; xnusavereset starts them anew): see host/initramfs/xnu-save
+SAVE=
+grep -qw xnusave /proc/cmdline && SAVE=1
+[ -n "${XNU_SAVE+x}" ] && SAVE=$XNU_SAVE
 if [ "$H" = "H+" ] || [ "$H" = "HX" ]; then
-	blockdev --setro "$D" || exit 1
 	if [ ! -e /dev/mapper/iosroot ]; then
 		modprobe -q dm-mod; modprobe -q dm-snapshot
+		N=$(blockdev --getsz "$D")
+		if [ "$SAVE" = 1 ] && ! xnu-save check "$D"; then SAVE=; fi
+		if [ "$SAVE" = 1 ]; then
+			# the partition stays writable for the save area; the iOS volume is reached only through a read-only mapping
+			DM_DISABLE_UDEV=1 $DM create iosbase --readonly --noudevsync --table "0 $N linear $D 0" || exit 1
+			B=/dev/mapper/iosbase
+		else
+			blockdev --setro "$D" || exit 1
+			B=$D
+		fi
 		mkdir -p /cow && mount -t tmpfs -o size=512m cow /cow && truncate -s 524288000 /cow/iosroot && losetup /dev/loop0 /cow/iosroot || exit 1
-		DM="/dm/ld-linux-aarch64.so.1 --library-path /dm /dm/dmsetup"
-		DM_DISABLE_UDEV=1 $DM create iosroot --noudevsync --table "0 $(blockdev --getsz "$D") snapshot $D /dev/loop0 N 8" || exit 1
+		DM_DISABLE_UDEV=1 $DM create iosroot --noudevsync --table "0 $N snapshot $B /dev/loop0 N 8" || exit 1
 		[ -e /dev/mapper/iosroot ] || { echo "no snapshot device"; exit 1; }
+		# patches to iOS's code, into the snapshot in RAM, before XNU reads it (never into the saved changes). XNU_PATCH=0 leaves iOS as it is.
+		[ "${XNU_PATCH:-1}" = 1 ] && [ -f /etc/iospatch.list ] && iospatch /dev/mapper/iosroot /etc/iospatch.list
+		[ "$SAVE" = 1 ] && { xnu-save open "$D" || exit 1; }
 	fi
-	# patches to iOS's code, into the snapshot (RAM), before XNU reads it. XNU_PATCH=0 leaves iOS as it is.
-	[ "${XNU_PATCH:-1}" = 1 ] && [ -f /etc/iospatch.list ] && iospatch /dev/mapper/iosroot /etc/iospatch.list
-	DISK="hostdisk=/dev/mapper/iosroot hostdisk_rw=1"
+	if [ -e /dev/mapper/iossaved ]; then DISK="hostdisk=/dev/mapper/iossaved hostdisk_rw=1"; else DISK="hostdisk=/dev/mapper/iosroot hostdisk_rw=1"; fi
 else
 	echo "$D has no HFS+ volume"
 fi

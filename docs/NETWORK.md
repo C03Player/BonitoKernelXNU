@@ -54,17 +54,16 @@ is typed again after every boot.
 
 Debugging: `XNU_BOOTARGS="net_names=1 net_trace=60 sweetiolog=configd"`; with `hfsplus` the host can mount the live iOS volume read-only.
 
-## Web pages draw with blank blocks (open, 2026-11-27)
+## Web pages drew with blank blocks (fixed 2026-11-27)
 
-Safari loads pages, but parts stay black or white. Reproduced without internet: put pages in a directory, build with `TESTWWW=DIR
-host/mkboot.sh ...`, start iOS with `XNU_WIFI= xnu-run && xnu-net`, add `192.168.77.1 pages.test` to the host's `/etc/hosts` before
-`xnu-net`, run `httpd -p 192.168.77.1:80 -h /www/t`, and open `pages.test` in Safari.
+Safari loaded pages, but composited layers (scrolling boxes, canvases, some transformed elements) were black or white. Two faults:
 
-- Plain page content draws. Some composited layers (`transform: translateZ(0)`, a scrolling box) are black or white; others of the same
-  style draw. On one boot the same layers failed on every reload (full-width layers 70 and 90 points high failed, 60, 80, 100 and 120 drew).
-  Later in a long run whole test pages came up white.
-- Same blocks with the screen declared sRGB instead of P3 (all web surfaces then BGRA), so the 10-bit formats are not the cause.
-- `sweetargs=MobileSafari,WebKit2GPUProcessForDOMRendering,NO` changed nothing; whether Safari read it was not checked.
-- No crash of a WebKit process and no GPU fault were logged.
-- Guess, not shown: the stale imports of docs/GPU-BRIDGE.md. `sweetgpuremap=0` logs only the first 32 moved imports, all used up by
-  backboardd before a page is open; the next step is a kernel that logs them for web surfaces too.
+- A WebKit surface whose pixel height was no multiple of 4 came up black (every width; not the memory size, cache write-back or binned
+  rendering; the reason is not known). The kernel rounds those heights up (`sweetsurfeven`, SweetSurface.cpp). A thin dark line shows at
+  the top of such layers.
+- With the iPhone X's wide-gamut screen (P3) WebKit draws some layers into two-plane 10-bit surfaces (`b3a8`), which the Metal plugin
+  refuses. The device tree now declares sRGB (`host/mkadtprops.py`).
+
+Both are needed. Verified with local pages: test layers, and saved copies of google.com's consent dialog and apple.com's text. To test
+without internet: build with `TESTWWW=DIR host/mkboot.sh ...`, start iOS with `XNU_WIFI= xnu-run && xnu-net`, add `192.168.77.1 pages.test`
+to the host's `/etc/hosts` before `xnu-net`, run `httpd -p 192.168.77.1:80 -h /www/t`, and open `pages.test` in Safari.

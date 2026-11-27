@@ -34,7 +34,7 @@ What works, as seen in screenshots and logs from the phone:
 
 What does not work, or is not there:
 
-- Changes made in iOS are kept in memory only and are lost at reboot. That includes Wi-Fi passwords.
+- Changes made in iOS are saved in a separate area on the phone (docs/STORAGE.md). Whether Wi-Fi passwords survive a reboot is untested.
 - The phone has to be started from a computer. Nothing is installed on it.
 - Sound, the cameras, Bluetooth and the mobile network.
 - After scrolling a list, some rows can keep the text of another row.
