@@ -27,6 +27,9 @@ PATCHES = [
     (0x18911c494, 0x1e6b2040, 0x1e6b2160, 'keyboard: 123 key, shifted keys'),
     # _BKSDisplayBrightnessSet's first instruction ("stp d9, d8, [sp, #-48]!") becomes a branch to the routine of host/iosbright.py
     (iosbright.FUNCTION, 0x6dbd23e9, 0x14000000 | (((iosbright.CAVE - iosbright.FUNCTION) >> 2) & 0x3ffffff), 'brightness: report the level'),
+    # BKSDisplayBrightnessIsBrightnessLevelControlAvailable answers no without a backlight device, and Control Center then disables its
+    # slider: its result ("cset w0, ne") becomes "mov w0, #1"
+    (0x18dcf3234, 0x1a9f07e0, 0x52800020, 'brightness: Control Center slider'),
 ]
 
 

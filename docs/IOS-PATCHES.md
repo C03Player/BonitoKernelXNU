@@ -34,8 +34,9 @@ device offsets.
 The kernel's brightness service (`sweetbacklight=1`) stalls the display after a few frames, so iOS has no backlight device. Instead
 `_BKSDisplayBrightnessSet`, which the Settings slider calls, branches to a routine placed in iPad-only code (`host/iosbright.py`) that
 opens `/sweetbr<float bits in hex>`; the kernel prints it (`SWEET BRIGHTNESS`) and `host/initramfs/xnu-bright` sets the panel (level
-squared, 4..1023). Verified: the Settings slider moved the panel from 1023 to 123 and back. Control Center's slider did not respond to
-injected touches (before the patch either), so it is untested. The panel starts at full brightness at each boot until a slider is moved.
+squared, 4..1023). Verified: the Settings slider moved the panel from 1023 to 123 and back. Control Center disables its slider while
+`BKSDisplayBrightnessIsBrightnessLevelControlAvailable` says no (it does without a backlight device); a second patch makes it say yes
+(the user confirmed the slider works, patched in the running system). The panel starts at full brightness at each boot until a slider is moved.
 
 ## Finding such a fault
 
