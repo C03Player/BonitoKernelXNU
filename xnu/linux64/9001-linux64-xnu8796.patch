@@ -2815,7 +2815,7 @@ index 5d6b4e5..ea0cd98 100644
  
  const char *
 diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
-index c5e2d5c..fabf089 100644
+index c5e2d5c..7411171 100644
 --- a/iokit/Kernel/arm/SweetSurface.cpp
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
 @@ -25,6 +25,7 @@
@@ -2847,7 +2847,25 @@ index c5e2d5c..fabf089 100644
  	if (s->memory == NULL || !sweet_surface_publish(s)) {
  		s->release();
  		return NULL;
-@@ -423,6 +430,27 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+@@ -348,6 +355,17 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 		s->pixelFormat = 0x42475241u;
+ 		one_plane = true;
+ 	}
++	/*
++	 * Boot-arg sweetsurfeven=N (test, off by default): a WebKit process's one-plane surface gets a height that is a multiple of N rows. Web
++	 * layers whose pixel height is no multiple of 4 come up black (docs/NETWORK.md).
++	 */
++	{
++		uint32_t even = 0;
++		if (PE_parse_boot_argn("sweetsurfeven", &even, sizeof(even)) && even > 1 && even <= 64 && s->elementHeight == 1 &&
++		    props->getObject("IOSurfacePlaneInfo") == NULL && strncmp(who, "com.apple.WebKit", 16) == 0 && s->height < SWEET_SURFACE_MAX_DIM) {
++			s->height = sweet_div_up(s->height, even) * even;
++		}
++	}
+ 	s->cacheMode = sweet_dict_u32(props, "IOSurfaceCacheMode", 0);
+ 	s->offset = sweet_dict_u32(props, "IOSurfaceOffset", 0);
+ 	if (s->width > SWEET_SURFACE_MAX_DIM || s->height > SWEET_SURFACE_MAX_DIM ||
+@@ -423,6 +441,27 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
  	if (alloc < end) {
  		alloc = end;
  	}
@@ -2875,7 +2893,7 @@ index c5e2d5c..fabf089 100644
  	alloc = round_page(alloc);
  	if (alloc == 0 || alloc > SWEET_SURFACE_MAX_ALLOC) {
  		return kIOReturnNoMemory;
-@@ -779,6 +807,11 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+@@ -779,6 +818,11 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
  			ret = kIOReturnNoMemory;
  		} else {
  			bzero(mem->getBytesNoCopy(), s->allocSize);
