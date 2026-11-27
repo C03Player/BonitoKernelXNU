@@ -46,6 +46,9 @@ if [ -n "$NET" ] && [ -n "$XNU_WIFI" ]; then
 	[ "$XNU_WIFI" = fake ] && F_WIFI=1
 	WIFIHOST_FAKE=$F_WIFI setsid wifihost /tmp/xnusvc.out /tmp/xnusvc.in > /tmp/wifihost.log 2>&1 < /dev/null &
 fi
+# the battery iOS shows is the phone's (xnu-state keeps /tmp/xnustate current)
+STATE=
+command -v xnu-state > /dev/null && { pidof xnu-state > /dev/null || setsid xnu-state /tmp/xnustate > /dev/null 2>&1 < /dev/null & sleep 1; STATE="state_in=/tmp/xnustate"; }
 # touch and buttons: Linux's input events, relayed into a file xnu.ko reads
 : > /tmp/xnuinput
 pidof evrelay > /dev/null || setsid evrelay /tmp/xnuinput > /tmp/evrelay.log 2>&1 < /dev/null &
@@ -71,6 +74,6 @@ fi
 A="${FBARGS:+$FBARGS }$A"
 # XNU_BOOTARGS first: the first occurrence of a boot-arg counts
 A="${XNU_BOOTARGS:+$XNU_BOOTARGS }$A"
-setsid insmod /hosted/xnu.ko $F $G $SVC input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=1536 monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+setsid insmod /hosted/xnu.ko $F $G $SVC $STATE input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=1536 monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
 [ -n "$FBARGS" ] && { pidof kmsfb > /dev/null || setsid kmsfb > /tmp/kmsfb.log 2>&1 < /dev/null & }
 echo started

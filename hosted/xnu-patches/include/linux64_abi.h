@@ -39,6 +39,7 @@ enum linux64_call {
 	LINUX64_CALL_DISK_SIZE      = 821,	/* a1 = u64 *: the system disk's size in bytes, 0 when there is none */
 	LINUX64_CALL_SVC_SEND       = 823,	/* a1 = struct linux64_buf_req: bytes for the host service's stream (svc_out) */
 	LINUX64_CALL_SVC_RECV       = 824,	/* a1 = struct linux64_buf_req: new bytes of the service's stream (svc_in) */
+	LINUX64_CALL_HOST_STATE     = 825,	/* a1 = struct linux64_buf_req: the host state file (state_in), from its start */
 	LINUX64_CALL_RANDOM         = 822,	/* a1 = buffer, a2 = length: bytes from the host's cryptographic generator */
 	LINUX64_CALL_HOSTCALL       = 830,	/* a1 = struct linux64_hostcall_req: a message to a Linux service and its reply */
 	LINUX64_CALL_CPU_START      = 840,	/* a1 = a CPU's MPIDR, a2 = its cpu_data_t: the host enters linux64_cpu_entry(a2) there */

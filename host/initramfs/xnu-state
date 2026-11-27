@@ -1,0 +1,20 @@
+#!/bin/sh
+# xnu-state FILE: keeps the phone's battery state in FILE for the hosted iOS (xnu iokit SweetBattery), one line, rewritten in place:
+# "battery <percent> <on external power> <charging> <mA, positive while charging> <mV>"
+B=/sys/class/power_supply/qcom-battery
+C=/sys/class/power_supply/pm660-charger
+: > "$1"
+while :; do
+	pct=$(cat $B/capacity 2>/dev/null)
+	if [ -n "$pct" ]; then
+		ext=$(cat $C/online 2>/dev/null || echo 1)
+		chg=0
+		[ "$(cat $B/status 2>/dev/null)" = Charging ] && chg=1
+		# the fuel gauge's current is negative while charging
+		ua=$(cat $B/current_now 2>/dev/null || echo 0)
+		uv=$(cat $B/voltage_now 2>/dev/null || echo 4200000)
+		# fixed width: the reader sees a whole line whenever it reads
+		printf 'battery %3d %1d %1d %6d %5d\n' "$pct" "$ext" "$chg" $((-ua / 1000)) $((uv / 1000)) | dd of="$1" conv=notrunc 2>/dev/null
+	fi
+	sleep 10
+done

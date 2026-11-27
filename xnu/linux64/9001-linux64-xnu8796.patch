@@ -136,10 +136,10 @@ index 0000000..aeb3087
 +#endif /* _LINUX64_LINUX64_H_ */
 diff --git a/EXTERNAL_HEADERS/linux64/linux64_abi.h b/EXTERNAL_HEADERS/linux64/linux64_abi.h
 new file mode 100644
-index 0000000..94b50ae
+index 0000000..4043155
 --- /dev/null
 +++ b/EXTERNAL_HEADERS/linux64/linux64_abi.h
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,129 @@
 +// SPDX-License-Identifier: APSL-2.0
 +/*
 + * Copyright (c) 2026 xnulinux contributors. All rights reserved.
@@ -181,6 +181,7 @@ index 0000000..94b50ae
 +	LINUX64_CALL_DISK_SIZE      = 821,	/* a1 = u64 *: the system disk's size in bytes, 0 when there is none */
 +	LINUX64_CALL_SVC_SEND       = 823,	/* a1 = struct linux64_buf_req: bytes for the host service's stream (svc_out) */
 +	LINUX64_CALL_SVC_RECV       = 824,	/* a1 = struct linux64_buf_req: new bytes of the service's stream (svc_in) */
++	LINUX64_CALL_HOST_STATE     = 825,	/* a1 = struct linux64_buf_req: the host state file (state_in), from its start */
 +	LINUX64_CALL_RANDOM         = 822,	/* a1 = buffer, a2 = length: bytes from the host's cryptographic generator */
 +	LINUX64_CALL_HOSTCALL       = 830,	/* a1 = struct linux64_hostcall_req: a message to a Linux service and its reply */
 +	LINUX64_CALL_CPU_START      = 840,	/* a1 = a CPU's MPIDR, a2 = its cpu_data_t: the host enters linux64_cpu_entry(a2) there */
@@ -1490,10 +1491,10 @@ index bb2a2bf..bb2dd78 100644
  
 diff --git a/bsd/kern/linux64_host.c b/bsd/kern/linux64_host.c
 new file mode 100644
-index 0000000..30c1063
+index 0000000..cf52372
 --- /dev/null
 +++ b/bsd/kern/linux64_host.c
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,165 @@
 +/*
 + * Copyright (c) 2026 xnulinux contributors. All rights reserved.
 + *
@@ -1572,6 +1573,20 @@ index 0000000..30c1063
 +		return 0;
 +	}
 +	linux64_call(LINUX64_CALL_SVC_RECV, &q);
++	return q.result > 0 ? q.result : 0;
++}
++
++/* The host's state file (battery and such), as it is now: the bytes read. */
++long linux64_host_state(void *buffer, unsigned long size);
++long
++linux64_host_state(void *buffer, unsigned long size)
++{
++	struct linux64_buf_req q = { .buf = buffer, .len = size, .result = 0 };
++
++	if (linux64_hook == 0) {
++		return 0;
++	}
++	linux64_call(LINUX64_CALL_HOST_STATE, &q);
 +	return q.result > 0 ? q.result : 0;
 +}
 +
@@ -2057,6 +2072,96 @@ index 7fb6243..0c18304 100644
  		}
  		rp->faults = fFaults;
  		return kIOReturnSuccess;
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 9969739..7adf9ce 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -12,6 +12,7 @@
+ #include <IOKit/pwr_mgt/IOPMPowerSource.h>
+ #include <libkern/c++/OSCollectionIterator.h>
+ #include <pexpert/pexpert.h>
++#include <pexpert/arm64/board_config.h>
+ /* bsd/dev/sweet_spmi.c */
+ extern "C" int sweet_spmi_init(void);
+ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
+@@ -203,9 +204,67 @@ SweetBattery::estimatePercent(unsigned mv)
+ 	return 100;
+ }
+ 
++#if defined(SWEET_HOSTED)
++extern "C" long linux64_host_state(void *buffer, unsigned long size);
++
++/*
++ * LINUX64: the battery is the host's: its state file holds "battery <percent> <external> <charging> <mA> <mV>" (host/initramfs/xnu-state;
++ * mA positive while charging). False when there is none.
++ */
++static bool
++sweet_battery_host(unsigned v[5], int *ma)
++{
++	char text[96];
++	long n = linux64_host_state(text, sizeof(text) - 1);
++	const char *s = text;
++
++	if (n < 8 || strncmp(text, "battery ", 8) != 0) {
++		return false;
++	}
++	text[n] = 0;
++	s += 8;
++	for (int i = 0; i < 5; i++) {
++		bool minus = false;
++		unsigned x = 0;
++
++		while (*s == ' ') {
++			s++;
++		}
++		if (*s == '-') {
++			minus = true;
++			s++;
++		}
++		if (*s < '0' || *s > '9') {
++			return false;
++		}
++		while (*s >= '0' && *s <= '9') {
++			x = x * 10 + (unsigned)(*s++ - '0');
++		}
++		v[i] = x;
++		if (i == 3) {
++			*ma = minus ? -(int)x : (int)x;
++		}
++	}
++	return v[0] <= 100;
++}
++#endif
++
+ void
+ SweetBattery::poll(void)
+ {
++#if defined(SWEET_HOSTED)
++	{
++		unsigned v[5];
++		int host_ma = 0;
++
++		if (sweet_battery_host(v, &host_ma)) {
++			publish(v[0], v[4], host_ma, v[1] != 0, v[1] != 0, v[2] != 0, v[1] != 0 && v[0] >= 100, true, true);
++		} else {
++			publish(100, 4200, 0, true, true, false, true, false, false);
++		}
++		return;
++	}
++#endif
+ 	uint8_t type, present, usb, path, charger, error, temperature;
+ 	uint16_t rawVoltage;
+ 	bool valid = fReal &&
+@@ -266,6 +325,9 @@ SweetBattery::start(IOService *provider)
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+ 	fReal = real == 1 && sweet_spmi_init() == 0;
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
++#if defined(SWEET_HOSTED)
++	fReal = true;		/* LINUX64: polled from the host, no SPMI */
++#endif
+ 	poll();
+ 	if (fReal) {
+ 		fLoop = IOWorkLoop::workLoop();
 diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 index 2545cf9..9a9f5de 100644
 --- a/iokit/Kernel/arm/SweetCPU.cpp
