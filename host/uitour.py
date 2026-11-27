@@ -39,5 +39,5 @@ for i, line in enumerate(l for l in text.split('\n') if l.strip() and not l.star
         subprocess.run([sys.executable, here + '/touch.py'] + cmd, stdout=subprocess.DEVNULL, timeout=90)
     time.sleep(float(wait))
     shot = f'{out}/{i:02d}-{name}.png'
-    r = subprocess.run([sys.executable, here + '/fbshot.py', shot], capture_output=True, text=True, timeout=90)
+    r = subprocess.run([sys.executable, here + '/fbshot.py', shot, '/tmp/xnufb'], capture_output=True, text=True, timeout=90)
     print(name, 'ok' if r.returncode == 0 else r.stderr.strip()[-200:], flush=True)
