@@ -34,12 +34,14 @@ fi
 # the network: en0 on the host's xnu0 (xnu-net gives it DHCP, DNS and NAT). XNU_NET=0 leaves it out.
 NET=
 [ "${XNU_NET:-1}" = 1 ] && command -v xnu-net > /dev/null && NET="linux64net=1"
-# XNU_WIFI=1: en0 is iOS's Wi-Fi: Settings lists the networks the host's radio hears and joins them (wifihost). =fake: made-up networks.
+# XNU_WIFI=1 (the default): en0 is iOS's Wi-Fi: Settings lists the networks the host's radio hears and joins them (wifihost). =fake: made-up networks.
 SVC=
+: ${XNU_WIFI=1}	# XNU_WIFI= (empty): en0 stays a wired interface
+command -v wifihost > /dev/null || XNU_WIFI=
 if [ -n "$NET" ] && [ -n "$XNU_WIFI" ]; then
 	NET="$NET linux64wifi=1"
 	: > /tmp/xnusvc.out; : > /tmp/xnusvc.in
-	SVC="svc_out=/tmp/xnusvc.out svc_in=/tmp/xnusvc.in"
+	SVC="wlan=1 svc_out=/tmp/xnusvc.out svc_in=/tmp/xnusvc.in"
 	F_WIFI=
 	[ "$XNU_WIFI" = fake ] && F_WIFI=1
 	WIFIHOST_FAKE=$F_WIFI setsid wifihost /tmp/xnusvc.out /tmp/xnusvc.in > /tmp/wifihost.log 2>&1 < /dev/null &
@@ -47,9 +49,9 @@ fi
 # touch and buttons: Linux's input events, relayed into a file xnu.ko reads
 : > /tmp/xnuinput
 pidof evrelay > /dev/null || setsid evrelay /tmp/xnuinput > /tmp/evrelay.log 2>&1 < /dev/null &
-# (sweetdeny: daemons that cannot run here and crash in a loop, taking CPU time; XNU_DENY=- runs them all)
+# (XNU_DENY=words: sweetdeny. A long list of crashing daemons got launchd killed at boot, 2026-11-27: not a default)
 # boot-args the direct port's userland needs (bonito/tools/mkios.sh), without its hardware ones
-A="${NET:+$NET }${GPUARGS:+$GPUARGS }cpus=${XNU_CPUS:-4} keepsyms=1 serial=0 rootrw=1 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist sweetdeny=${XNU_DENY:-WirelessRadioManagerd,bluetoothd,fairplayd,SiriTTSSynthesizerAU,MacinTalkAUSP,KonaSynthesizer,CommCenter} sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
+A="${NET:+$NET }${GPUARGS:+$GPUARGS }cpus=${XNU_CPUS:-4} keepsyms=1 serial=0 rootrw=1 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist ${XNU_DENY:+sweetdeny=$XNU_DENY }sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
 # the hosted display: a framebuffer in XNU's memory, copied to the host's fb0 (the text console lets go of it first)
 for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" $v/name 2>/dev/null && echo 0 > $v/bind; done
 F=

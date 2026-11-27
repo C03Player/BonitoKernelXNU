@@ -89,6 +89,8 @@ static const void *tc_data; static unsigned long tc_size; static void *tc_blob;
  * out; XnuDisplay (kexts/XnuDisplay) copies each frame WindowServer swaps into it. fb_width=0 boots without one. A host thread
  * writes it to fb_dump (raw BGRA, fb_width x fb_height) every fb_dump_ms milliseconds when both are set.
  */
+static int wlan;		/* the hosted system has Wi-Fi (boot-arg linux64wifi): describe it in the device tree */
+module_param(wlan, int, 0444);
 static int fb_width = 1280, fb_height = 800;
 module_param(fb_width, int, 0444);
 module_param(fb_height, int, 0444);
@@ -953,7 +955,7 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 		adt_prop_str(&a, "model", gpu_model);
 	adt_node(&a, 1, 0);				/* /options: NVRAM's node (AppleImage4 keeps its nonce seeds there) */
 	adt_prop_str(&a, "name", "options");
-	adt_node(&a, 3, FB_SIZE ? 1 : 0);		/* /arm-io: XNU needs a nonzero SoC base */
+	adt_node(&a, 3, (FB_SIZE ? 1 : 0) + (wlan ? 1 : 0));	/* /arm-io: XNU needs a nonzero SoC base */
 	adt_prop_str(&a, "name", "arm-io");
 	adt_prop_str(&a, "device_type", "linux64-io");
 	{ u64_t ranges[3] = { 0, 0x7000000000ULL, 0x10000000ULL }; adt_prop(&a, "ranges", ranges, sizeof(ranges)); }
@@ -966,6 +968,13 @@ static struct boot_args_v2 *build_boot(unsigned char *base_va, u64_t phys, u64_t
 		adt_prop_str(&a, "compatible", "sweet,display");
 		adt_prop_u32(&a, "canvas-width", (unsigned)fb_width);
 		adt_prop_u32(&a, "canvas-height", (unsigned)fb_height);
+	}
+	if (wlan) {
+		/* /arm-io/wlan: launchd loads wifid only on a device tree with Wi-Fi (its _LimitLoadToDeviceTree: wlan, marconi-wifi) */
+		adt_node(&a, 3, 0);
+		adt_prop_str(&a, "name", "wlan");
+		adt_prop_u32(&a, "AAPL,phandle", 0x101);
+		adt_prop_str(&a, "compatible", "linux64,wlan");
 	}
 	if (a.err) { logs("xnu: ADT overflow"); return 0; }
 	u64_t dt_len = adt_size(&a);
