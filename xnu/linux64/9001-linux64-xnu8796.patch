@@ -2022,7 +2022,7 @@ index 89d8840..54516fb 100644
 +	controller->release();
 +}
 diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
-index 7fb6243..c33d125 100644
+index 7fb6243..e36a989 100644
 --- a/iokit/Kernel/arm/SweetAccelerator.cpp
 +++ b/iokit/Kernel/arm/SweetAccelerator.cpp
 @@ -35,6 +35,28 @@
@@ -2054,33 +2054,139 @@ index 7fb6243..c33d125 100644
  #include <IOKit/IOService.h>
  #include <IOKit/IOLib.h>
  #include <IOKit/IOUserClient.h>
-@@ -88,6 +110,10 @@ class IOAcceleratorES : public IOService {
+@@ -80,6 +102,7 @@ struct SweetV2BO {
+ 	uint64_t iova;                  /* GPU address while mapped, else 0 */
+ 	uint64_t pool_pa;               /* allocated: its memory in the GPU pool (sweet_gpu_pool_alloc) */
+ 	bool imported;                  /* the client's own pages (no CPU-map token) */
++	uint64_t uaddr;                 /* imported: the client address it was made from */
+ };
+ 
+ class IOAcceleratorES : public IOService {
+@@ -88,6 +111,12 @@ class IOAcceleratorES : public IOService {
  
  OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
  
 +#if defined(SWEET_HOSTED)
 +extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
++extern "C" struct pmap *get_task_pmap(task_t task);
++extern "C" ppnum_t pmap_find_phys(struct pmap *pmap, addr64_t va);
 +#endif
 +
  class SweetAccelerator : public IOAcceleratorES {
  	OSDeclareDefaultStructors(SweetAccelerator);
  
-@@ -156,6 +182,7 @@ class SweetAcceleratorUserClient : public IOUserClient {
+@@ -156,8 +185,13 @@ class SweetAcceleratorUserClient : public IOUserClient {
  
  	int addMemory(IOMemoryDescriptor *md, uint64_t *handle, uint64_t *va);
  	IOReturn v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize);
 +	IOReturn v2MethodBody(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize);
  	SweetV2BO *v2Find(uint64_t handle);
  	IOReturn v2NewSlot(IOMemoryDescriptor *md, uint64_t bytes, bool imported, uint64_t *handle);
++	IOReturn v2MapPages(IOMemoryDescriptor *md, uint64_t bytes, uint64_t iova);
++#if defined(SWEET_HOSTED)
++	void v2CheckImports(void);
++#endif
  	void v2Release(SweetV2BO *bo);
-@@ -639,8 +666,30 @@ SweetAcceleratorUserClient::v2Release(SweetV2BO *bo)
+ 
+ public:
+@@ -619,6 +653,89 @@ sweet_pool_release(IOMemoryDescriptor *md, uint64_t pa)
+ 	IOLockUnlock(sweet_zombie_lock);
+ }
+ 
++/* the pages in 4K steps (16K VM pages, any 4K-aligned import), mapped in pieces at iova; fLock held */
++IOReturn
++SweetAcceleratorUserClient::v2MapPages(IOMemoryDescriptor *md, uint64_t bytes, uint64_t iova)
++{
++	for (uint64_t off = 0; off < bytes;) {
++		uint32_t n = 0;
++		uint64_t start = off;
++		for (; n < SWEET_V2_PAGEBUF && off < bytes; n++, off += 4096) {
++			IOByteCount seg = 0;
++			addr64_t pa = md->getPhysicalSegment(off, &seg, kIOMemoryMapperNone);
++			if (pa == 0 || (pa & 4095)) {
++				return kIOReturnVMError;
++			}
++			fPageBuf[n] = pa;
++		}
++		if (sweet_gpu_map_at(iova + start, fPageBuf, n)) {
++			return kIOReturnNoResources;
++		}
++	}
++	return kIOReturnSuccess;
++}
++
++#if defined(SWEET_HOSTED)
++/*
++ * LINUX64: an imported buffer keeps the pages its address had at the import. A client that frees that memory and gets the same address again
++ * while the buffer lives (the Metal runtime looks live imports up by address) then writes new pages while the GPU still reads the old ones.
++ * Before a submit: where an import's first or last page is no longer what the client's address maps, report it and (boot-arg sweetgpuremap=1)
++ * import the address again at the same GPU address. fLock held.
++ */
++void
++SweetAcceleratorUserClient::v2CheckImports(void)
++{
++	static int remap = -1;
++	static uint64_t moved, checks;
++	if (remap < 0) {
++		uint32_t v = 0;
++		remap = PE_parse_boot_argn("sweetgpuremap", &v, sizeof(v)) && v;
++	}
++	struct pmap *pmap = get_task_pmap(fTask);
++	if ((++checks & 1023) == 0) {
++		IOLog("SWEET MTL: v2 %s: %llu import checks, %llu moved\n", fName, checks, moved);
++	}
++	for (uint32_t i = 0; i < fBOCap; i++) {
++		SweetV2BO *bo = &fBO[i];
++		if (bo->md == NULL || !bo->imported || bo->iova == 0) {
++			continue;
++		}
++		bool differs = false;
++		for (uint64_t off = 0, k = 0; k < 2 && !differs; k++, off = bo->bytes - 4096) {
++			ppnum_t now = pmap_find_phys(pmap, bo->uaddr + off);
++			if (now == 0) {
++				continue;       /* not mapped at the moment: nothing to compare */
++			}
++			IOByteCount seg = 0;
++			addr64_t pa = bo->md->getPhysicalSegment(off, &seg, kIOMemoryMapperNone);
++			differs = pa != 0 && (pa >> PAGE_SHIFT) != (addr64_t)now;
++		}
++		if (!differs) {
++			continue;
++		}
++		if (moved++ < 32) {
++			IOLog("SWEET MTL: v2 %s: import 0x%llx (%llu KB) no longer at its pages%s\n", fName, bo->uaddr, bo->bytes >> 10,
++			    remap ? ": imported again" : "");
++		}
++		if (!remap) {
++			continue;
++		}
++		IOMemoryDescriptor *md = IOMemoryDescriptor::withAddressRange(bo->uaddr, bo->bytes, kIODirectionOut, fTask);
++		if (md == NULL || md->prepare() != kIOReturnSuccess) {
++			OSSafeReleaseNULL(md);
++			continue;
++		}
++		sweet_gpu_unmap_at(bo->iova, bo->bytes);
++		if (v2MapPages(md, bo->bytes, bo->iova) != kIOReturnSuccess) {
++			IOLog("SWEET MTL: v2 %s: mapping 0x%llx again failed\n", fName, bo->uaddr);
++		}
++		bo->md->complete();
++		bo->md->release();
++		bo->md = md;
++	}
++}
++#endif
++
+ /* Unmap from the GPU, unwire, drop (pool memory: once no task maps it any more) */
+ void
+ SweetAcceleratorUserClient::v2Release(SweetV2BO *bo)
+@@ -639,8 +756,30 @@ SweetAcceleratorUserClient::v2Release(SweetV2BO *bo)
  	bzero(bo, sizeof(*bo));
  }
  
 +#if defined(SWEET_HOSTED)
 +/* LINUX64: every failed request is logged (GPU bridge bring-up: what made Turnip declare the device lost) */
-+IOReturn
-+SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
+ IOReturn
+ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
 +{
 +	IOReturn r = v2MethodBody(method, in, inSize, out, outSize);
 +	if (r != kIOReturnSuccess && !(method == NativeAdrenoMethodWaitFence && r == kIOReturnTimeout)) {
@@ -2092,8 +2198,8 @@ index 7fb6243..c33d125 100644
 +	return r;
 +}
 +#else
- IOReturn
- SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
++IOReturn
++SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t inSize, void *out, uint32_t *outSize)
 +{
 +	return v2MethodBody(method, in, inSize, out, outSize);
 +}
@@ -2104,7 +2210,42 @@ index 7fb6243..c33d125 100644
  {
  	static uint32_t logged;
  #define V2_IN(T)        if (in == NULL || inSize != sizeof(T)) return kIOReturnBadArgument; const T *rq = (const T *)in
-@@ -842,6 +891,36 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+@@ -746,6 +885,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+ 		IOLockLock(fLock);
+ 		uint64_t h = 0;
+ 		IOReturn r = v2NewSlot(md, rq->bytes, true, &h);
++		if (r == kIOReturnSuccess) {
++			fBO[h - 1].uaddr = rq->address;
++		}
+ 		IOLockUnlock(fLock);
+ 		if (r != kIOReturnSuccess) {
+ 			md->complete();
+@@ -771,22 +913,8 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+ 		} else if (rq->iova < fWinBase || rq->iova + bo->bytes > fWinBase + fWinSize || rq->iova + bo->bytes < rq->iova) {
+ 			r = kIOReturnBadArgument;
+ 		}
+-		/* the pages in 4K steps (16K VM pages, any 4K-aligned import), mapped in pieces */
+-		for (uint64_t off = 0; r == kIOReturnSuccess && off < bo->bytes;) {
+-			uint32_t n = 0;
+-			uint64_t start = off;
+-			for (; n < SWEET_V2_PAGEBUF && off < bo->bytes; n++, off += 4096) {
+-				IOByteCount seg = 0;
+-				addr64_t pa = bo->md->getPhysicalSegment(off, &seg, kIOMemoryMapperNone);
+-				if (pa == 0 || (pa & 4095)) {
+-					r = kIOReturnVMError;
+-					break;
+-				}
+-				fPageBuf[n] = pa;
+-			}
+-			if (r == kIOReturnSuccess && sweet_gpu_map_at(rq->iova + start, fPageBuf, n)) {
+-				r = kIOReturnNoResources;
+-			}
++		if (r == kIOReturnSuccess) {
++			r = v2MapPages(bo->md, bo->bytes, rq->iova);
+ 		}
+ 		if (r == kIOReturnSuccess) {
+ 			bo->iova = rq->iova;
+@@ -842,6 +970,41 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
  		if (rq->wait_fence != 0 && sweet_gpu_wait_fence_ns((uint32_t)rq->wait_fence, rq->wait_timeout_ns)) {
  			return kIOReturnTimeout;
  		}
@@ -2138,10 +2279,15 @@ index 7fb6243..c33d125 100644
 +			}
 +		}
 +#endif
++#if defined(SWEET_HOSTED)
++		IOLockLock(fLock);
++		v2CheckImports();
++		IOLockUnlock(fLock);
++#endif
  		bool busy = false;
  		uint32_t fence = sweet_gpu_submit_v2(iova, dw, rq->buffer_count, &busy);
  		if (fence == 0) {
-@@ -864,6 +943,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+@@ -864,6 +1027,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
  		V2_OUT(NativeAdrenoAbiStatus);
  		if (sweet_gpu_lost(&fEpoch, fLastFence)) {
  			fFaults++;
