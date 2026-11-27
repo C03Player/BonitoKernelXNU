@@ -17,7 +17,18 @@ and `wlanmdsp.mbn`, `bdwlan-bonito.bin` from the phone's vendor image in `$MODEM
 
 Open: the MAC address is random at each boot.
 
-## iOS networking (to do)
+## iOS networking (link works, 2026-11-27)
 
-A network interface in XNU that exchanges Ethernet frames with a host service, which does DHCP, DNS and NAT in user space (libslirp), so it
-works over whatever route Linux has.
+en0 in XNU (`bsd/dev/linux64_net_link.c`, boot-arg `linux64net=1`, set by `xnu-run`; `XNU_NET=0` leaves it out) exchanges frames with the
+Linux device `xnu0` that `fki.ko` creates. `xnu-net` on the host gives `xnu0` 192.168.77.1, runs dnsmasq (DHCP, DNS forwarding to
+`/etc/resolv.conf`) and masquerades everything else with nftables.
+
+configd configures en0 only when it finds it as an Ethernet interface in the registry (`RedwoodEthernet`) and when an `IONetworkStack`
+service exists (`MiniIONetworkStack`, otherwise it waits). Verified with build 45913646691: DHCP lease 192.168.77.10, default route via
+192.168.77.1, the host pings the phone's iOS.
+
+    wifi-up; XNU_CPUS=4 xnu-run; xnu-net; wifi-join /tmp/wifi.conf
+
+Not tested: traffic to the internet (no network joined yet).
+
+Debugging: `XNU_BOOTARGS="net_names=1 net_trace=60 sweetiolog=configd"`; with `hfsplus` the host can mount the live iOS volume read-only.
