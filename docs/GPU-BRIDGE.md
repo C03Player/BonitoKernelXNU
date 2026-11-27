@@ -48,7 +48,15 @@ screenshot tour showed no such rectangles; one faint line on a just-woken lock s
 Open: after scrolling a list, some rows keep another row's text (Settings: "Emergency SO" beside the Airplane Mode icon). Reproduced in
 14 of 14 rounds by `host/uistale.py` (Settings at the top: scroll down, back, compare). The Metal plugin cleans the CPU caches for the
 surfaces and no-copy buffers of each command buffer, and an extra GPU cache invalidate in `adrenod` changed nothing (14 of 14), so neither
-cache explains it by itself. Next: how the plugin tracks surfaces whose content changed.
+cache explains it by itself. Further tries (boot-args write the plugin's switch files):
+
+| try | result |
+|---|---|
+| `sweetgpuclean=1`: kernel cleans every imported buffer before each submit | 12 of 12 rounds differ; wrong pieces are parts of other labels (`Not Connectec`, `lar Calendar`) |
+| `sweetfullarea=1`: no partial render areas | 10 of 10 rounds differ |
+| `sweetnoworker=1`: translation on the caller's thread | invalid: a GPU fault early in the run (CP read, address with its upper bits gone), then `DeviceLost`; the screen froze |
+
+Next: how the plugin tracks surfaces whose content changed (needs a rebuilt iOS-side plugin). Do not use `sweetnoworker=1`.
 
 Open: the Photos widget is black.
 
