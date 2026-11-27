@@ -2815,7 +2815,7 @@ index 5d6b4e5..ea0cd98 100644
  
  const char *
 diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
-index c5e2d5c..efc4e7d 100644
+index c5e2d5c..fabf089 100644
 --- a/iokit/Kernel/arm/SweetSurface.cpp
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
 @@ -25,6 +25,7 @@
@@ -2826,7 +2826,15 @@ index c5e2d5c..efc4e7d 100644
  #include "SweetSurface.h"
  
  #if defined(SWEET)
-@@ -271,7 +272,12 @@ sweet_surface_create_physical(uint64_t phys, uint32_t width, uint32_t height,
+@@ -34,6 +35,7 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/system.h>
++#include <string.h>
+ #include <libkern/c++/OSArray.h>
+ #include <libkern/c++/OSDictionary.h>
+ #include <libkern/c++/OSNumber.h>
+@@ -271,7 +273,12 @@ sweet_surface_create_physical(uint64_t phys, uint32_t width, uint32_t height,
  	s->pixelFormat = pixelFormat;
  	s->allocSize = (uint32_t)round_page(bytesPerRow * height);
  	s->memory = IOMemoryDescriptor::withPhysicalAddress(phys, s->allocSize, kIODirectionInOut);
@@ -2839,7 +2847,7 @@ index c5e2d5c..efc4e7d 100644
  	if (s->memory == NULL || !sweet_surface_publish(s)) {
  		s->release();
  		return NULL;
-@@ -423,6 +429,27 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+@@ -423,6 +430,27 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
  	if (alloc < end) {
  		alloc = end;
  	}
@@ -2867,6 +2875,18 @@ index c5e2d5c..efc4e7d 100644
  	alloc = round_page(alloc);
  	if (alloc == 0 || alloc > SWEET_SURFACE_MAX_ALLOC) {
  		return kIOReturnNoMemory;
+@@ -779,6 +807,11 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 			ret = kIOReturnNoMemory;
+ 		} else {
+ 			bzero(mem->getBytesNoCopy(), s->allocSize);
++			/* boot-arg sweetsurffill=BYTE (test): new surfaces start with that byte: tells "never drawn" from "never read" on screen */
++			uint32_t fill = 0;
++			if (PE_parse_boot_argn("sweetsurffill", &fill, sizeof(fill)) && fill) {
++				memset(mem->getBytesNoCopy(), (int)fill, s->allocSize);
++			}
+ 			s->memory = mem;
+ 			s->mapCache = kIOMapDefaultCache;
+ 			if (!sweet_surface_publish(s)) {
 diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
 index ae562be..cc7f82f 100644
 --- a/iokit/Kernel/arm/hid/SweetHID.cpp
