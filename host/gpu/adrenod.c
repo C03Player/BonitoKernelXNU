@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 #include <drm/drm.h>
@@ -104,9 +105,53 @@ static int do_unmap(uint64_t iova, uint64_t len)
 static struct drm_msm_gem_submit_bo bos[MAX_MAPS];
 static uint32_t dumpflag;	/* ADRENOD_DUMP=1: buffer contents go into the crash dump (/sys/class/devcoredump) */
 
+/*
+ * Between the command buffers of one submit: the colour and depth caches written back and the GPU idle. msm flushes only at a submit's end,
+ * and each of Turnip's command buffers starts by invalidating the colour cache, which dropped the tiles the one before had not written back
+ * (rectangles of an older frame on screen; the direct port's patch 0188). The commands live in a buffer of ours above the clients' address
+ * windows (the address space reported to XNU is FLUSH_RESERVE smaller). ADRENOD_NOFLUSH=1 leaves it out.
+ */
+#define FLUSH_RESERVE 0x1000000ull
+static uint32_t flush_handle, flush_size;
+
+static uint32_t pkt7(uint32_t op, uint32_t n)
+{
+	return 0x70000000u | n | ((uint32_t)!__builtin_parity(n) << 15) | (op << 16) | ((uint32_t)!__builtin_parity(op) << 23);
+}
+
+static void flush_init(uint64_t iova)
+{
+	struct drm_msm_gem_new g = { .size = 8192, .flags = MSM_BO_WC };
+	if (ioctl(drm, DRM_IOCTL_MSM_GEM_NEW, &g))
+		return;
+	struct drm_msm_gem_info i = { .handle = g.handle, .info = MSM_INFO_SET_IOVA, .value = iova };
+	if (ioctl(drm, DRM_IOCTL_MSM_GEM_INFO, &i))
+		return;
+	i.info = MSM_INFO_GET_OFFSET;
+	i.value = 0;
+	if (ioctl(drm, DRM_IOCTL_MSM_GEM_INFO, &i))
+		return;
+	uint32_t *c = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, drm, (off_t)i.value), n = 0;
+	if (c == MAP_FAILED)
+		return;
+	/* CP_EVENT_WRITE with a timestamp: PC_CCU_FLUSH_COLOR_TS, PC_CCU_FLUSH_DEPTH_TS, CACHE_FLUSH_TS; then CP_WAIT_FOR_IDLE */
+	static const uint32_t events[] = { 0x1d, 0x1c, 4 };
+	for (unsigned k = 0; k < 3; k++) {
+		uint64_t a = iova + 4096 + k * 16;
+		c[n++] = pkt7(0x46, 4);
+		c[n++] = events[k];
+		c[n++] = (uint32_t)a;
+		c[n++] = (uint32_t)(a >> 32);
+		c[n++] = 0;
+	}
+	c[n++] = pkt7(0x26, 0);
+	flush_size = n * 4;
+	flush_handle = g.handle;
+}
+
 static int do_submit(const struct agpu_ib *ib, uint32_t n, uint64_t *fence)
 {
-	struct drm_msm_gem_submit_cmd cmds[AGPU_MAX_IBS];
+	struct drm_msm_gem_submit_cmd cmds[2 * AGPU_MAX_IBS];
 	uint32_t nbos = 0;
 
 	if (n == 0 || n > AGPU_MAX_IBS)
@@ -126,7 +171,18 @@ static int do_submit(const struct agpu_ib *ib, uint32_t n, uint64_t *fence)
 		cmds[i].submit_offset = (uint32_t)(ib[i].iova - m->iova);
 		cmds[i].size = ib[i].dwords * 4;
 	}
-	uint32_t ncmd = nbos;
+	uint32_t ncmd = nbos, ncmds = n;
+	if (flush_handle) {
+		uint32_t at = nbos;
+		/* backwards, so each command buffer moves once: ib0 flush ib1 flush ... */
+		for (uint32_t i = n; i-- > 0;) {
+			cmds[2 * i] = cmds[i];
+			cmds[2 * i + 1] = (struct drm_msm_gem_submit_cmd){ .type = MSM_SUBMIT_CMD_BUF, .submit_idx = at, .size = flush_size };
+		}
+		ncmds = 2 * n;
+		bos[nbos++] = (struct drm_msm_gem_submit_bo){ .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE | dumpflag, .handle = flush_handle };
+		ncmd = nbos;
+	}
 	for (unsigned i = 0; i < nmaps; i++) {
 		uint32_t j;
 		for (j = 0; j < ncmd && bos[j].handle != maps[i].handle; j++)
@@ -135,7 +191,7 @@ static int do_submit(const struct agpu_ib *ib, uint32_t n, uint64_t *fence)
 			bos[nbos++] = (struct drm_msm_gem_submit_bo){ .flags = MSM_SUBMIT_BO_READ | MSM_SUBMIT_BO_WRITE | dumpflag, .handle = maps[i].handle };
 	}
 	struct drm_msm_gem_submit s = {
-		.flags = MSM_PIPE_3D0 | MSM_SUBMIT_NO_IMPLICIT, .nr_bos = nbos, .nr_cmds = n,
+		.flags = MSM_PIPE_3D0 | MSM_SUBMIT_NO_IMPLICIT, .nr_bos = nbos, .nr_cmds = ncmds,
 		.bos = (uintptr_t)bos, .cmds = (uintptr_t)cmds, .queueid = queue,
 	};
 	if (ioctl(drm, DRM_IOCTL_MSM_GEM_SUBMIT, &s))
@@ -183,6 +239,8 @@ static size_t serve(const uint8_t *in, size_t inlen, uint8_t *out)
 		uint64_t trap = 0;
 		if (!r->status && param(MSM_PARAM_UCHE_TRAP_BASE, &trap))
 			trap = 0x1fffffffff000ull;
+		if (!r->status && flush_handle)
+			r->v[4] -= FLUSH_RESERVE;	/* our flush commands sit above what XNU hands out */
 		memcpy(r + 1, &trap, 8);
 		r->n = 1;
 		return 8 + sizeof(*r) + 8;
@@ -243,6 +301,9 @@ int main(int argc, char **argv)
 	param(MSM_PARAM_CHIP_ID, &chip);
 	param(MSM_PARAM_VA_START, &vs);
 	param(MSM_PARAM_VA_SIZE, &vz);
+	if (!getenv("ADRENOD_NOFLUSH") && vz > 2 * FLUSH_RESERVE)
+		flush_init(vs + vz - FLUSH_RESERVE);
+	fprintf(stderr, "adrenod: cache flush between command buffers %s\n", flush_handle ? "on" : "off");
 	hc = open("/dev/xnu-hostcall", O_RDWR | O_CLOEXEC);
 	if (hc < 0) {
 		perror("/dev/xnu-hostcall");
