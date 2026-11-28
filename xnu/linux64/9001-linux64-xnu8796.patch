@@ -968,6 +968,26 @@ index 3e6bffa..3c26b89 100644
  
  	/* make sure (base, size) is a valid range and will not overflow */
  	assert(*size < (UINT64_MAX - *base));
+diff --git a/bsd/dev/redwood_apple80211.c b/bsd/dev/redwood_apple80211.c
+index e2674ee..5f542c3 100644
+--- a/bsd/dev/redwood_apple80211.c
++++ b/bsd/dev/redwood_apple80211.c
+@@ -433,6 +433,15 @@ get(struct apple80211req *request)
+ 		error = state->phase != REDWOOD_STA_JOINED ? ENXIO : give(request, &answer, sizeof(answer));
+ 		break;
+ 	}
++	case 106: {                             /* the signal strengths the radio reports (dBm). Without an answer wifid keeps */
++		struct {                        /* zeroes and no saved network is ever strong enough to be joined by itself */
++			uint32_t version;
++			int32_t lowest, highest, threshold;
++		} answer = { .version = 1, .lowest = -90, .highest = -10, .threshold = -75 };
++
++		error = give(request, &answer, sizeof(answer));
++		break;
++	}
+ 	case 103:                               /* all of it, as a scan's result */
+ 		error = state->phase != REDWOOD_STA_JOINED ? ENXIO : give_network(request, &state->bss);
+ 		break;
 diff --git a/bsd/dev/redwood_net.c b/bsd/dev/redwood_net.c
 index e7b46fd..3b46756 100644
 --- a/bsd/dev/redwood_net.c
