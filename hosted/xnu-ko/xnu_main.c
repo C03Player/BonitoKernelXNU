@@ -130,6 +130,9 @@ module_param(input_in, charp, 0444);
 static char *keystore;		/* the hosted keystore's file (XnuEAN's EAN blobs): read and written through LINUX64_CALL_KEYSTORE_RW */
 module_param(keystore, charp, 0444);
 static void *ks_file;
+static char *cam;		/* the camera file shared by the host's camera server and iOS's /dev/sweetcam: LINUX64_CALL_CAM_RW */
+module_param(cam, charp, 0444);
+static void *cam_file;
 /* The hosted system's block disk (kexts/XnuDisk: IOKit media, e.g. an APFS container), read-write (LINUX64_CALL_DISK_SIZE, _RW) */
 static char *disk;
 module_param(disk, charp, 0444);
@@ -627,6 +630,11 @@ static long xnu_hook_body(unsigned long call, unsigned long a1, unsigned long a2
 		struct linux64_rw_req *q = (struct linux64_rw_req *)a1;
 		if (q) q->result = dk_file ? fki_file_rw(dk_file, (int)q->write, q->buf, (unsigned long)q->len, q->off) : -6;
 		if (q && q->result > 0) acct_disk_slot[this_slot()] += (unsigned long)q->result;
+		return 0;
+	}
+	if (call == LINUX64_CALL_CAM_RW) {		/* the camera file: q->result = bytes moved or -errno */
+		struct linux64_rw_req *q = (struct linux64_rw_req *)a1;
+		if (q) q->result = cam_file ? fki_file_rw(cam_file, (int)q->write, q->buf, (unsigned long)q->len, q->off) : -6;
 		return 0;
 	}
 	if (call == LINUX64_CALL_KEYSTORE_RW) {		/* the keystore file: q->result = bytes moved or -errno */
@@ -1465,6 +1473,11 @@ static int __init xnu_init(void)
 		ks_file = fki_file_open(keystore, 1, &sz);
 		if (!ks_file) logs("xnu: cannot open the keystore file");
 	}
+	if (cam) {
+		fki_u64 sz;
+		cam_file = fki_file_open(cam, 1, &sz);
+		if (!cam_file) logs("xnu: cannot open the camera file");
+	}
 	if (input_in) {
 		fki_u64 sz = 0;
 		in_file = fki_file_open(input_in, 0, &sz);
@@ -1516,6 +1529,7 @@ static void __exit xnu_exit(void)
 	if (hd_file) fki_file_close(hd_file);
 	if (fb_file) fki_file_close(fb_file);
 	if (ks_file) fki_file_close(ks_file);
+	if (cam_file) fki_file_close(cam_file);
 	if (dk_file) fki_file_close(dk_file);
 	if (ci_file) fki_file_close(ci_file);
 	if (in_file) fki_file_close(in_file);

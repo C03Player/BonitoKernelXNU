@@ -71,6 +71,13 @@ command -v xnu-state > /dev/null && { pidof xnu-state > /dev/null || setsid xnu-
 command -v xnu-bright > /dev/null && { pidof xnu-bright > /dev/null || setsid xnu-bright > /tmp/xnu-bright.log 2>&1 < /dev/null & }
 # shut down and restart from iOS (host/initramfs/xnu-halt)
 command -v xnu-halt > /dev/null && { pidof xnu-halt > /dev/null || setsid xnu-halt > /tmp/xnu-halt.log 2>&1 < /dev/null & }
+# the cameras (docs/CAMERA.md): the server switches one on while iOS's camera app asks for frames. XNU_CAMERA=0 leaves them out.
+CAM=
+if [ "${XNU_CAMERA:-1}" = 1 ] && command -v camcap > /dev/null && cam-up > /tmp/cam-up.log 2>&1; then
+	: >> /tmp/xnucam
+	pidof camcap > /dev/null || setsid camcap serve /tmp/xnucam > /tmp/camcap.log 2>&1 < /dev/null &
+	CAM="cam=/tmp/xnucam"
+fi
 # touch and buttons: Linux's input events, relayed into a file xnu.ko reads
 : > /tmp/xnuinput
 pidof evrelay > /dev/null || setsid evrelay /tmp/xnuinput > /tmp/evrelay.log 2>&1 < /dev/null &
@@ -100,7 +107,7 @@ A="${XNU_BOOTARGS:+$XNU_BOOTARGS }$A"
 # dropped, and with less. XNU_RAM=MB: that size only. (insmod stays for the whole run: a failure shows within seconds.)
 ok=
 for M in ${XNU_RAM:-1408 1408 1216 1088}; do
-	setsid insmod /hosted/xnu.ko $F $G $SVC $STATE input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=$M monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
+	setsid insmod /hosted/xnu.ko $F $G $SVC $STATE $CAM input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=$M monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
 	for i in 1 2 3 4 5 6; do sleep 1; grep -q 'Cannot allocate memory' /tmp/xnu-insmod.log && break; done
 	grep -q 'Cannot allocate memory' /tmp/xnu-insmod.log || { grep -q "can't insert" /tmp/xnu-insmod.log || ok=1; break; }
 	echo "no room for ${M} MB"

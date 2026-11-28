@@ -19,6 +19,14 @@ for app in $V/private/var/staged_system_apps/*.app; do
 	[ -e "$V/Applications/${app##*/}" ] && continue
 	mv "$app" $V/Applications/ && n=$((n + 1))
 done
+# with /tmp/camera-app.tar.gz there (the camera-app workflow's artifact, docs/CAMERA.md): that app too
+if [ -f /tmp/camera-app.tar.gz ]; then
+	rm -rf $V/Applications/BonitoCamera.app
+	gzip -dc /tmp/camera-app.tar.gz | tar -C $V/Applications -xf -
+	chown -R 0:0 $V/Applications/BonitoCamera.app
+	chmod 755 $V/Applications/BonitoCamera.app/BonitoCamera
+	n=$((n + 1))
+fi
 # iOS rebuilds its list of apps when the database is gone
 [ $n = 0 ] || find $V/private/var -name "com.apple.LaunchServices*.csstore" -exec rm {} +
 sync; umount $V; DM_DISABLE_UDEV=1 $DM remove --noudevsync appvol; sync

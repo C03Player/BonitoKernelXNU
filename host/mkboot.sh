@@ -19,7 +19,7 @@ ln -s busybox "$R/bin/sh"
 install -m755 host/initramfs/init "$R/init"
 install -m755 host/initramfs/report "$R/bin/report"
 install -m755 host/initramfs/cam-up "$R/bin/cam-up"
-gcc -static -O2 -s -Wall -o "$R/bin/camcap" host/camcap.c
+gcc -static -O3 -s -Wall -o "$R/bin/camcap" host/camcap.c -lm
 gcc -static -Os -s -o "$R/bin/rebootto" host/rebootto.c
 gcc -static -O2 -s -o "$R/bin/fbcopy" host/fbcopy.c
 gcc -static -O2 -s -o "$R/bin/evrelay" host/evrelay.c

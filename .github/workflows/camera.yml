@@ -1,0 +1,22 @@
+name: camera-app
+
+# The camera app of the hosted iOS (bonito/userland/camera, docs/CAMERA.md). Output: artifact "camera-app".
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: sh bonito/userland/camera/build.sh && COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf camera-app.tar.gz -C bonito/userland/camera/out BonitoCamera.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camera-app
+          path: camera-app.tar.gz
+          retention-days: 14

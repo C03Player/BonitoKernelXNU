@@ -136,10 +136,10 @@ index 0000000..aeb3087
 +#endif /* _LINUX64_LINUX64_H_ */
 diff --git a/EXTERNAL_HEADERS/linux64/linux64_abi.h b/EXTERNAL_HEADERS/linux64/linux64_abi.h
 new file mode 100644
-index 0000000..4043155
+index 0000000..052801d
 --- /dev/null
 +++ b/EXTERNAL_HEADERS/linux64/linux64_abi.h
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,130 @@
 +// SPDX-License-Identifier: APSL-2.0
 +/*
 + * Copyright (c) 2026 xnulinux contributors. All rights reserved.
@@ -183,6 +183,7 @@ index 0000000..4043155
 +	LINUX64_CALL_SVC_RECV       = 824,	/* a1 = struct linux64_buf_req: new bytes of the service's stream (svc_in) */
 +	LINUX64_CALL_HOST_STATE     = 825,	/* a1 = struct linux64_buf_req: the host state file (state_in), from its start */
 +	LINUX64_CALL_RANDOM         = 822,	/* a1 = buffer, a2 = length: bytes from the host's cryptographic generator */
++	LINUX64_CALL_CAM_RW         = 826,	/* a1 = struct linux64_rw_req on the camera file (cam) */
 +	LINUX64_CALL_HOSTCALL       = 830,	/* a1 = struct linux64_hostcall_req: a message to a Linux service and its reply */
 +	LINUX64_CALL_CPU_START      = 840,	/* a1 = a CPU's MPIDR, a2 = its cpu_data_t: the host enters linux64_cpu_entry(a2) there */
 +	LINUX64_CALL_IPI            = 841,	/* a1 = the target CPU's MPIDR: its linux64_ipi_pending slot is set; make it look */
@@ -270,7 +271,7 @@ index 0000000..4043155
 +
 +#endif /* _LINUX64_ABI_H_ */
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 121579c..4c8f8a3 100644
+index 121579c..1d2b4b9 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
 @@ -106,6 +106,7 @@ bsd/dev/random/randomdev.c		standard
@@ -281,16 +282,17 @@ index 121579c..4c8f8a3 100644
  bsd/dev/bonito_reset.c			standard
  bsd/dev/bonito_misc.c			standard
  bsd/dev/sweet_sample.c			standard
-@@ -124,6 +125,8 @@ bsd/dev/redwood_net.c		standard
+@@ -124,6 +125,9 @@ bsd/dev/redwood_net.c		standard
  bsd/dev/redwood_apple80211.c	standard
  bsd/dev/flame_sta.c		standard
  bsd/dev/flame_wlan.c		standard
 +bsd/dev/linux64_net_link.c	standard
++bsd/dev/linux64_cam.c		standard
 +bsd/dev/linux64_wifi.c		standard
  bsd/dev/mem.c				standard
  bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
-@@ -191,6 +194,7 @@ bsd/net/dlil.c				optional networking
+@@ -191,6 +195,7 @@ bsd/net/dlil.c				optional networking
  bsd/net/ether_if_module.c		optional ether
  bsd/net/ether_inet_pr_module.c		optional ether inet
  bsd/net/ether_inet6_pr_module.c		optional ether inet
@@ -350,6 +352,117 @@ index 0000000..4a29bec
 +	/* payload follows */
 +};
 +#endif
+diff --git a/bsd/dev/linux64_cam.c b/bsd/dev/linux64_cam.c
+new file mode 100644
+index 0000000..c76f95e
+--- /dev/null
++++ b/bsd/dev/linux64_cam.c
+@@ -0,0 +1,105 @@
++/*
++ * LINUX64: /dev/sweetcam, the host's camera file (xnu.ko parameter cam=) shared with iOS. The host's camera server (host/camcap.c
++ * "serve") puts frames into it; the camera app (bonito/userland/camera) reads them and writes which camera it wants. The layout is
++ * theirs: the device only moves bytes at offsets, like a file.
++ */
++#include <pexpert/arm64/board_config.h>
++#if defined(SWEET_HOSTED)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/conf.h>
++#include <sys/errno.h>
++#include <sys/uio.h>
++#include <miscfs/devfs/devfs.h>
++#include <kern/kalloc.h>
++
++#define CAM_CHUNK       (256 * 1024)
++#define CAM_SIZE        (16 * 1024 * 1024)
++
++extern long linux64_cam_rw(int write, void *buffer, unsigned long length, unsigned long offset);
++extern void linux64_cam_init(void);
++
++static int
++cam_open(__unused dev_t dev, __unused int flags, __unused int devtype, __unused struct proc *p)
++{
++	return 0;
++}
++
++static int
++cam_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unused struct proc *p)
++{
++	return 0;
++}
++
++static int
++cam_move(struct uio *uio, int write)
++{
++	char *chunk = kalloc_data(CAM_CHUNK, Z_WAITOK | Z_ZERO);
++	int error = 0;
++
++	if (chunk == NULL) {
++		return ENOMEM;
++	}
++	while (error == 0 && uio_resid(uio) > 0 && uio_offset(uio) >= 0 && uio_offset(uio) < CAM_SIZE) {
++		off_t at = uio_offset(uio);
++		user_ssize_t left = uio_resid(uio);
++		int n = (int)MIN(MIN(left, CAM_CHUNK), CAM_SIZE - at);
++
++		if (write) {
++			error = uiomove(chunk, n, uio);
++			if (error == 0 && linux64_cam_rw(1, chunk, n, (unsigned long)at) != n) {
++				error = EIO;
++			}
++		} else {
++			long got = linux64_cam_rw(0, chunk, n, (unsigned long)at);
++
++			if (got <= 0) {
++				error = got < 0 ? EIO : 0;
++				break;
++			}
++			error = uiomove(chunk, (int)got, uio);
++		}
++	}
++	kfree_data(chunk, CAM_CHUNK);
++	return error;
++}
++
++static int
++cam_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	return cam_move(uio, 0);
++}
++
++static int
++cam_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	return cam_move(uio, 1);
++}
++
++static const struct cdevsw cam_cdevsw = {
++	.d_open       = cam_open,
++	.d_close      = cam_close,
++	.d_read       = cam_read,
++	.d_write      = cam_write,
++	.d_ioctl      = eno_ioctl,
++	.d_stop       = eno_stop,
++	.d_reset      = eno_reset,
++	.d_ttys       = NULL,
++	.d_select     = eno_select,
++	.d_mmap       = eno_mmap,
++	.d_strategy   = eno_strat,
++	.d_reserved_1 = eno_getc,
++	.d_reserved_2 = eno_putc,
++	.d_type       = 0,
++};
++
++void
++linux64_cam_init(void)
++{
++	int major = cdevsw_add(-1, &cam_cdevsw);
++
++	if (major >= 0) {
++		devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "sweetcam");
++	}
++}
++#endif /* SWEET_HOSTED */
 diff --git a/bsd/dev/linux64_net_link.c b/bsd/dev/linux64_net_link.c
 new file mode 100644
 index 0000000..8993fa8
@@ -1435,7 +1548,7 @@ index d405964..3033246 100644
  static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
  static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index bb2a2bf..b90268d 100644
+index bb2a2bf..f0cef46 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -405,6 +405,78 @@ void (*unmountroot_pre_hook)(void);
@@ -1517,7 +1630,7 @@ index bb2a2bf..b90268d 100644
  extern lck_rw_t rootvnode_rw_lock;
  
  SECURITY_READ_ONLY_LATE(struct mach_vm_range) bsd_pageable_range = {};
-@@ -1043,6 +1115,35 @@ bsd_init(void)
+@@ -1043,6 +1115,37 @@ bsd_init(void)
  	bsd_init_kprintf("calling siginit\n");
  	siginit(kernproc);
  
@@ -1547,6 +1660,8 @@ index bb2a2bf..b90268d 100644
 +	{
 +		extern void linux64_net_link_init(void);        /* bsd/dev/linux64_net_link.c */
 +		linux64_net_link_init();
++		extern void linux64_cam_init(void);             /* bsd/dev/linux64_cam.c */
++		linux64_cam_init();
 +	}
 +#endif
 +
@@ -1555,10 +1670,10 @@ index bb2a2bf..b90268d 100644
  
 diff --git a/bsd/kern/linux64_host.c b/bsd/kern/linux64_host.c
 new file mode 100644
-index 0000000..cf52372
+index 0000000..cbccd56
 --- /dev/null
 +++ b/bsd/kern/linux64_host.c
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,173 @@
 +/*
 + * Copyright (c) 2026 xnulinux contributors. All rights reserved.
 + *
@@ -1686,6 +1801,14 @@ index 0000000..cf52372
 +linux64_store_rw(int write, void *buffer, unsigned long length, unsigned long offset)
 +{
 +	return linux64_rw(LINUX64_CALL_KEYSTORE_RW, write, buffer, length, offset);
++}
++
++/* The camera file: `length` bytes at `offset`; bytes moved, or a negative errno. */
++long linux64_cam_rw(int write, void *buffer, unsigned long length, unsigned long offset);
++long
++linux64_cam_rw(int write, void *buffer, unsigned long length, unsigned long offset)
++{
++	return linux64_rw(LINUX64_CALL_CAM_RW, write, buffer, length, offset);
 +}
 +
 +/* The system disk: its size in bytes (0: none), and `length` bytes at `offset` (bytes moved, or a negative errno). */
