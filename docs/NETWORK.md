@@ -49,14 +49,28 @@ iOS). A real network was joined from Settings on 2026-11-27. Safari did load a p
 (`httpd` on 192.168.77.1, named in the host's `/etc/hosts` for dnsmasq); its content drew black until WebKit was given the GPU (the kernel now writes
 the plugin's client list with WebKit's processes); after that the page renders (build 45936681835).
 
-Tested 2026-11-28 with the made-up networks: after a join of BonitoWPA, Wi-Fi off and on, iOS lists it under "My Networks" and one tap
-joins it without the password. **It does not join by itself** (no join request in 90 s, also after locking and unlocking); why is open.
-Whether the saved password survives a reboot with saved changes is not tested.
+Auto-join (works, 2026-11-28, made-up networks, kernel run 46133356299): a saved open network was joined at boot while the screen was
+locked, and a password network was joined again after Wi-Fi off and on, both without a touch. Until then iOS listed saved networks under
+"My Networks" but joined them only on a tap: `wifid` asks the driver for its signal range (`APPLE80211_IOC_RSSI_BOUNDS`, request 106), the
+kernel refused, `wifid` kept zeroes, and every saved network was "Below minimum RSSI threshold". Not tested: a real network, and whether
+a saved password survives a reboot with saved changes.
 
 A password typed on the phone passes through RAM files on the host (`/tmp/xnusvc.out`) and `wpa_cli`'s arguments; nothing is stored, so it
 is typed again after every boot.
 
-Debugging: `XNU_BOOTARGS="net_names=1 net_trace=60 sweetiolog=configd"`; with `hfsplus` the host can mount the live iOS volume read-only.
+Debugging: `XNU_BOOTARGS="net_names=1 net_trace=60 sweetiolog=configd"`.
+
+### Reading what iOS's daemons say
+
+- The host can read the running iOS volume: map its 16 GiB first (`dmsetup create peek --readonly --table "0 33554432 linear
+  /dev/mapper/iosroot 0"`), then `mount -t hfsplus -o ro /dev/mapper/peek DIR` (modules `hfsplus`, `nls_utf8`). `sync; echo 3 >
+  /proc/sys/vm/drop_caches` and mount again to see newer files.
+- Unified logs: `private/var/db/diagnostics/{Persist,Special}/*.tracev3`, read on the PC with `host/tracev3.py DSCDIR FILE... --lib
+  CoreWiFi`. CoreWiFi's `AUTO-JOIN:` lines give the reason a candidate was refused.
+- `wifid`'s own file, `private/var/logs/wifimanager.log`, appears when `LoggingFileEnabled` is true in
+  `private/var/preferences/SystemConfiguration/com.apple.wifi.plist` (set before XNU starts, on the RAM copy: `XNU_PRESTART`).
+- Crash reports: `private/var/mobile/Library/Logs/CrashReporter/*.ips`. On a hosted boot `CommCenter` crashes every 20-30 s (a null
+  pointer in `ApplePDPHelper`: there is no modem to talk to); no other process did in the boot looked at.
 
 ## Web pages drew with blank blocks (fixed 2026-11-27)
 
