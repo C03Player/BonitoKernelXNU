@@ -25,3 +25,7 @@ If `xnu.ko` then fails with "Cannot allocate memory", drop caches and compact me
   below), but some of its programs froze and never returned (`firmware`, `sleep`, once `cat`); cause not proven.
 - `/System/Library/xpc/launchd.plist` is ignored: with `rd=md0` launchd runs in its ramdisk mode, skips `launchd_cache_loader` and reads
   the per-service files.
+
+2026-11-28: installed into the saved changes on the user's request (after the warning that store packages run as root): backup of the
+saved changes, a rehearsal of `install.sh` on a RAM snapshot over `iossaved`, then `install.sh /dev/mapper/iossaved`, checked by a
+read-only mount. Installing a package through either store is still untried.
