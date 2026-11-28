@@ -38,6 +38,9 @@ BLOCKS = [
     (iosbright.CAVE, iosbright.CODE, 'brightness: report the level (host/iosbright.py)'),
 ]
 
+# env IOS_DISABLE_JOBS=name,name: iOS services that are not to run (/System/Library/LaunchDaemons/NAME.plist; launchd reads those files in the
+# hosted boot mode). The property list's first byte is changed, so launchd cannot read it.
+
 FILE_PATCHES = [
     # (file on the root disk, file offset, original instruction, replacement, why)
     # The Metal runtime of our plugin hands out an existing import again when memory is asked for at the same address and length. iOS frees
@@ -191,6 +194,17 @@ def main():
         if hint < 0 or old.hex() in hints:
             hint = search(old, scan=not name)
         lines.append('%d %s 0 %s\n' % (hint, old.hex(), hashlib.sha256(data).hexdigest()))
+    for job in filter(None, os.environ.get('IOS_DISABLE_JOBS', '').split(',')):
+        name = '/System/Library/LaunchDaemons/%s.plist' % job
+        at = on_disk(image, name, 0)
+        if at < 0:
+            sys.exit('%s: its place on the disk is needed (the root image)' % name)
+        with open(image, 'rb') as f:
+            f.seek(at)
+            head = f.read(64)
+        if not (head.startswith(b'bplist00') or head.startswith(b'<?xml')):
+            sys.exit('%s: not a property list' % name)
+        lines.append('%d %s 0 78\n' % (at, head.hex()))
     open(out, 'w').writelines(lines)
     open(out + '.hint', 'w').writelines('%s %d\n' % kv for kv in hints.items() if kv[1] >= 0)
     print('%s: %d changes' % (out, len(lines)))

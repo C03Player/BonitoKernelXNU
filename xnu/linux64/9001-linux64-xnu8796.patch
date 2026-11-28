@@ -1415,7 +1415,7 @@ index d405964..3033246 100644
  static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
  static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index bb2a2bf..30076f6 100644
+index bb2a2bf..55378bd 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -405,6 +405,77 @@ void (*unmountroot_pre_hook)(void);
@@ -1496,7 +1496,7 @@ index bb2a2bf..30076f6 100644
  extern lck_rw_t rootvnode_rw_lock;
  
  SECURITY_READ_ONLY_LATE(struct mach_vm_range) bsd_pageable_range = {};
-@@ -1043,6 +1114,35 @@ bsd_init(void)
+@@ -1043,6 +1114,23 @@ bsd_init(void)
  	bsd_init_kprintf("calling siginit\n");
  	siginit(kernproc);
  
@@ -1506,18 +1506,6 @@ index bb2a2bf..30076f6 100644
 +
 +		if (kernel_thread_start(sweet_plugin_files_thread, NULL, &t) == KERN_SUCCESS) {
 +			thread_deallocate(t);
-+		}
-+	}
-+#endif
-+
-+#if defined(SWEET_HOSTED)
-+	{
-+		/* where watched processes wait, on request only (boot-args sweetsample=a,b sweetsampledelay= sweetsampleperiod=: sweet_sample.c) */
-+		extern void sweet_sample_start(void);
-+		char names[8];
-+
-+		if (PE_parse_boot_argn("sweetsample", names, sizeof(names))) {
-+			sweet_sample_start();
 +		}
 +	}
 +#endif
