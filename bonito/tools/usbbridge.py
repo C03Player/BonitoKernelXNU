@@ -203,17 +203,19 @@ class Conn:
         if self.state not in ('ESTABLISHED', 'CLOSE_WAIT'):
             return
         inflight = sum(len(u[2]) for u in self.unacked)
-        if not self.local_closed and inflight < 32768:
+        while not self.local_closed and inflight < 32768:  # fill the window: one segment per call was ~70 KiB/s
             r, _, _ = select.select([self.lsock], [], [], 0)
-            if r:
-                try:
-                    d = self.lsock.recv(MSS)
-                except OSError:
-                    d = b''
-                if d:
-                    self._seg(0x18, d)                     # PSH+ACK
-                else:
-                    self.local_closed = True
+            if not r:
+                break
+            try:
+                d = self.lsock.recv(MSS)
+            except OSError:
+                d = b''
+            if d:
+                self._seg(0x18, d)                         # PSH+ACK
+                inflight += len(d)
+            else:
+                self.local_closed = True
         if self.local_closed and not self.fin_sent:
             self._seg(0x11, b'')                           # FIN+ACK
             self.fin_sent = True
