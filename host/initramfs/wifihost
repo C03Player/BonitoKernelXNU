@@ -65,7 +65,9 @@ scan() {
 join() {	# ssid-hex open|pass|pmk key-hex
 	if [ -n "$WIFIHOST_FAKE" ]; then
 		sleep 1
-		if [ "$2" = open ] || [ "$(unhex "$3")" = password123 ]; then say "joined 0 020000000001"; else say "joined 80 -"; fi
+		# iOS sends the key it derived from the passphrase (pmk): this one is BonitoWPA's for "password123"
+		if [ "$2" = open ] || { [ "$2" = pmk ] && [ "$3" = b0a81d50753f1e4cf8ebedb6f10c320b755d352f24dfdb6aec91b7ad02def072 ]; } ||
+		    [ "$(unhex "$3")" = password123 ]; then say "joined 0 020000000001"; else say "joined 80 -"; fi
 		return
 	fi
 	radio || { say "joined 5 -"; return; }

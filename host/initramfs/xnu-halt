@@ -2,8 +2,12 @@
 # xnu-halt [KMSG]: when the hosted iOS shuts down, power the phone off; when it restarts, go to the bootloader (iOS cannot boot again
 # without the PC). XNU says so in the kernel log before it stops its CPUs; Linux can hang after that, so this must be quick. iOS has
 # unmounted its disk by then; the sync puts Linux's cache (the saved changes) on the storage.
+# On the user's own boot (xnuauto) a crashed XNU (an occasional one at startup kills launchd) leaves a frozen screen: go to the bootloader
+# after 30 s. Test boots stay up so that the log can be read.
 cat ${1:-/dev/kmsg} | while read -r line; do
 	case "$line" in
+	*"fki: xnu: XNU panic:"*)
+		grep -qw xnuauto ${CMDLINE:-/proc/cmdline} && { ${WAIT:-sleep 30}; sync; ${REBOOT:-rebootto bootloader}; } ;;
 	*"fki: xnu] CPU halted"* | *"the hosted system halted"*) sync; ${POWEROFF:-poweroff -f} ;;
 	*"fki: xnu] MACH Reboot"* | *"the hosted system asked for a restart"*) sync; ${REBOOT:-rebootto bootloader} ;;
 	esac

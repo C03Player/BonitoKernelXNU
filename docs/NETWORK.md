@@ -49,6 +49,10 @@ iOS). A real network was joined from Settings on 2026-11-27. Safari did load a p
 (`httpd` on 192.168.77.1, named in the host's `/etc/hosts` for dnsmasq); its content drew black until WebKit was given the GPU (the kernel now writes
 the plugin's client list with WebKit's processes); after that the page renders (build 45936681835).
 
+Tested 2026-11-28 with the made-up networks: after a join of BonitoWPA, Wi-Fi off and on, iOS lists it under "My Networks" and one tap
+joins it without the password. **It does not join by itself** (no join request in 90 s, also after locking and unlocking); why is open.
+Whether the saved password survives a reboot with saved changes is not tested.
+
 A password typed on the phone passes through RAM files on the host (`/tmp/xnusvc.out`) and `wpa_cli`'s arguments; nothing is stored, so it
 is typed again after every boot.
 
