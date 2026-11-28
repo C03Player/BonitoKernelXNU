@@ -25,3 +25,6 @@ host/sweetpoke/*.mod*
 host/sweetpoke/.*
 host/sweetpoke/Module.symvers
 host/sweetpoke/modules.order
+# core dumps hold process memory and environment: never commit one
+core
+core.[0-9]*
