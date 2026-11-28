@@ -20,6 +20,17 @@ Verified 2026-11-27: Light appearance set in Settings was still set after a rebo
 Dark setting; the volume header's hash was the same on every boot. Not verified: whether the keychain (Wi-Fi passwords) can be read back
 after a reboot (the key store is a software stand-in), long use, a full save area.
 
+## Backing up the saved changes (2026-11-28)
+
+The persistent snapshot's store starts 1 MiB into the save area: header chunk, then areas of 256 exceptions (16 bytes: old and new chunk,
+4 KiB chunks) each followed by its 256 data chunks; the highest new chunk gives how much is used. A backup is the area's first MiB plus that
+many chunks, taken with nothing mapped (a test boot, no `xnuauto`), gzipped to the PC and compared by SHA-256:
+`dd bs=1M skip=20480 count=1` and `dd bs=4096 skip=5243136 count=CHUNKS` of the partition. Restoring is writing the same two ranges back
+(not tried). Backups hold the user's data: keep them in `backup/` (ignored by git).
+
+Before the stock apps and the camera app went into the saved changes (`host/stores/stockapps.sh /dev/mapper/iossaved`, on the user's
+request), the same run was rehearsed on a RAM snapshot over `iossaved`.
+
 ## Shut down and restart from iOS
 
 `host/initramfs/xnu-halt` follows the kernel log: iOS's shut down powers the phone off, its restart goes to the bootloader. Without it
