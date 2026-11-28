@@ -12,7 +12,10 @@ The gadget: phone MAC 02:00:5e:77:ee:02, this side 02:00:5e:77:ee:01. Addresses:
 Linux uses 172.31.254.0/30, because home networks often use 192.168.7.0/24; the direct port's gadget, xnu patch 0075, uses the latter). The
 one that answers ARP is used.
 """
-import os, queue, select, socket, struct, sys, threading, time
+import os, queue, resource, select, socket, struct, sys, threading, time
+
+# no core dump if libusb crashes this process: one holds its environment and the traffic, and lands in the working directory
+resource.setrlimit(resource.RLIMIT_CORE, (0, resource.getrlimit(resource.RLIMIT_CORE)[1]))
 
 try:
     import usb.core, usb.util
