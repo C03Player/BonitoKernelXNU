@@ -33,3 +33,14 @@ Install into the test copy: send `/tmp/hfsreplay`, `/tmp/stockapps.sh` and `/tmp
 `XNU_PRESTART=/tmp/stockapps.sh xnu-run`. Into the saved changes only on the user's say-so.
 
 `host/camframe.py` turns a copy of the camera file into a PNG.
+
+Tried on the phone (test copy, 2026-11-28): both cameras live in the app, Flip, the permission prompt, two photos saved to the library.
+
+### Open: the rear stream stalls
+
+At 4032x3024 the rear camera stops delivering frames every few seconds, with the sensor's controls left alone too, and without a line in
+the kernel log; the front camera (3280x2464) ran 30 s without a stop, the rear one 6 s once under Linux alone. The server waits 250 ms,
+then starts the stream again: about 26 frames a second with short hiccups. A memory-bandwidth vote in `qcom-camss` (it has none for
+sdm670) did not change it.
+
+Photos must not get a Metal device (`mtl2-clients`): with one it aborts as soon as the library holds a picture.
