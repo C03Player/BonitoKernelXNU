@@ -1435,10 +1435,10 @@ index d405964..3033246 100644
  static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
  static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index bb2a2bf..55378bd 100644
+index bb2a2bf..b90268d 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -405,6 +405,77 @@ void (*unmountroot_pre_hook)(void);
+@@ -405,6 +405,78 @@ void (*unmountroot_pre_hook)(void);
  #endif
  void set_rootvnode(vnode_t);
  
@@ -1449,8 +1449,8 @@ index bb2a2bf..55378bd 100644
 +/*
 + * LINUX64: files of the root that the Metal plugin (SweetMetal2) reads when a process opens the GPU. Written from here because Linux mounts
 + * the not cleanly unmounted root only read-only; retried until the root is writable.
-+ *   mtl2-clients: who besides backboardd gets a Metal device. The direct port's list plus WebKit's processes: without them Safari's pages
-+ *   were black (com.apple.WebKit.GPU "not listed: no Metal device").
++ *   mtl2-clients: who besides backboardd gets a Metal device. The direct port's list plus WebKit's processes, without which Safari's pages
++ *   were black (com.apple.WebKit.GPU "not listed: no Metal device"), and the stock apps that draw with Metal (Maps stayed blank).
 + *   With boot-arg sweetmesalog=1 also mtl2-tu-debug and mtl2-env: Turnip's own messages on the console.
 + */
 +static void
@@ -1489,7 +1489,8 @@ index bb2a2bf..55378bd 100644
 +sweet_plugin_files_thread(void *arg __unused, wait_result_t wr __unused)
 +{
 +	sweet_plugin_write("/private/var/local/mtl2-clients",
-+	    "SpringBoard chronod PosterBoard AegirPoster CollectionsPoster com.apple.WebKit.GPU com.apple.WebKit.WebContent\n");
++	    "SpringBoard chronod PosterBoard AegirPoster CollectionsPoster com.apple.WebKit.GPU com.apple.WebKit.WebContent "
++	    "Maps MobileSlideShow PhotosReliveWidget FitnessWidget Camera Weather Freeform Measure Compass Magnifier\n");
 +	/* debugging switches of the plugin, one boot-arg each */
 +	if (sweet_plugin_flag("sweetmesalog")) {        /* Turnip's own messages on the console */
 +		sweet_plugin_write("/private/var/local/mtl2-tu-debug", "default\n");     /* leaves TU_DEBUG and MESA_LOG_FILE to mtl2-env */
@@ -1516,7 +1517,7 @@ index bb2a2bf..55378bd 100644
  extern lck_rw_t rootvnode_rw_lock;
  
  SECURITY_READ_ONLY_LATE(struct mach_vm_range) bsd_pageable_range = {};
-@@ -1043,6 +1114,23 @@ bsd_init(void)
+@@ -1043,6 +1115,35 @@ bsd_init(void)
  	bsd_init_kprintf("calling siginit\n");
  	siginit(kernproc);
  
@@ -1526,6 +1527,18 @@ index bb2a2bf..55378bd 100644
 +
 +		if (kernel_thread_start(sweet_plugin_files_thread, NULL, &t) == KERN_SUCCESS) {
 +			thread_deallocate(t);
++		}
++	}
++#endif
++
++#if defined(SWEET_HOSTED)
++	{
++		/* where watched processes wait, on request only (boot-args sweetsample=a,b sweetsampledelay= sweetsampleperiod=: sweet_sample.c) */
++		extern void sweet_sample_start(void);
++		char names[8];
++
++		if (PE_parse_boot_argn("sweetsample", names, sizeof(names))) {
++			sweet_sample_start();
 +		}
 +	}
 +#endif
