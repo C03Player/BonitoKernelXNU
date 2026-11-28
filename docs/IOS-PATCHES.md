@@ -50,3 +50,20 @@ fault address.
    with the fault address equal to the register; `br xN` does the same for any value and shows that the place was reached. For a double,
    `fmov x9, dN` followed by `br x9` (the top byte of the address is not reported).
 4. The app dies and restarts; read `sub 0x...` in the `CRASH` line (`host/klog.py` keeps only 10 minutes per run).
+
+## accountsd waits on lockdownd for ever (2026-11-28)
+
+Notes opened to a black screen. Process samples (boot-arg `sweetsample=MobileNotes,accountsd`): Notes' main thread in a synchronous XPC
+call to `accountsd`, whose threads sat in `recvfrom` under `lockdown_copy_value` from `_tetheredSyncSourceTypeForDataType`. `lockdownd`
+was still in its own start-up, in a message call that had not returned (its log ends there on every boot looked at); it is not patched.
+`accountsd`'s question is whether a computer syncs this kind of data, so the function now returns at once what it returns when it cannot
+ask, `@"iPhone"` (three instructions, `host/iospatches.py`). After it: Notes shows its welcome screen. Any other program that calls
+lockdown would wait the same way.
+
+## Stock apps (test copy, 2026-11-28)
+
+32 of Apple's apps (Calculator, Clock, Notes, Calendar, Files, Weather ...) sit in `/private/var/staged_system_apps`: a real device installs
+them at first boot, which this system never gets to (it boots as a restore does). `host/stores/stockapps.sh` moves them to `/Applications`
+before XNU starts; tried on the copy in RAM only. Opened and showing their screens: Calculator, Clock, Calendar, Photos, Notes, Mail, TV,
+Health, Reminders, Music, Settings, Weather (no data offline), Files. Blank after 30-90 s with no network: Maps, News, Podcasts, FaceTime
+(why is open). Writing this into the saved changes is the user's decision.

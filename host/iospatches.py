@@ -30,6 +30,12 @@ PATCHES = [
     # BKSDisplayBrightnessIsBrightnessLevelControlAvailable answers no without a backlight device, and Control Center then disables its
     # slider: its result ("cset w0, ne") becomes "mov w0, #1"
     (0x18dcf3234, 0x1a9f07e0, 0x52800020, 'brightness: Control Center slider'),
+    # AccountsDaemon's _tetheredSyncSourceTypeForDataType asks lockdownd whether a computer syncs this kind of data. lockdownd never gets
+    # past its start here, so the question was never answered and whoever waited on accountsd hung (Notes: a black screen). The function's
+    # first instructions return what it returns when it cannot ask: @"iPhone" ("adrp x0; add x0, x0, #0x298; ret").
+    (0x1e9d87510, 0xa9bd57f6, 0xd011b300, 'accounts: no lockdownd question (1/3)'),
+    (0x1e9d87514, 0xa9014ff4, 0x910a6000, 'accounts: no lockdownd question (2/3)'),
+    (0x1e9d87518, 0xa9027bfd, 0xd65f03c0, 'accounts: no lockdownd question (3/3)'),
 ]
 
 
