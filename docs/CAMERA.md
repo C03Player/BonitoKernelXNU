@@ -16,7 +16,20 @@ for the front one). Verified by looking at the pictures: the rear camera showed 
 dim light and sensor noise. Not there: autofocus (the lens stays where it is), automatic exposure, the ISP (white balance and noise
 reduction are crude, in the PC script). Pictures are private: they go to `logs/`, which git ignores.
 
-## iOS side (open)
+## iOS side
 
-iOS reaches its cameras through Apple's ISP driver (`AppleH10CamIn`) and its firmware, which this system has nothing to stand in for: the
-stock Camera app cannot use these cameras as it is.
+iOS reaches its cameras through Apple's ISP driver (`AppleH10CamIn`) and its firmware, which this system has nothing to stand in for:
+Apple's Camera app, and apps that use the camera, cannot see these cameras. Instead:
+
+- `camcap serve /tmp/xnucam` (started by `xnu-run`; `XNU_CAMERA=0` leaves the cameras out) switches a sensor on while asked, debayers one
+  cell in four to an upright BGRA picture (rear 756x1008, front 616x820, mirrored), sets exposure and gain towards a middle grey and a
+  grey-world white balance, and writes into the camera file (layout: `host/camfile.h`). Measured: 30 frames per second, a few percent of a
+  CPU. Off 5 s after the last request.
+- `xnu.ko` (`cam=/tmp/xnucam`) and the kernel's `/dev/sweetcam` (`bsd/dev/linux64_cam.c`) give iOS read and write at offsets of that file.
+- Our app `bonito/userland/camera` (workflow `camera-app`) shows the frames, flips between the cameras, and the shutter saves the picture
+  on screen to Photos. Photos are the preview's size; there is no video, flash, focus or zoom.
+
+Install into the test copy: send `/tmp/hfsreplay`, `/tmp/stockapps.sh` and `/tmp/camera-app.tar.gz` to the phone, then
+`XNU_PRESTART=/tmp/stockapps.sh xnu-run`. Into the saved changes only on the user's say-so.
+
+`host/camframe.py` turns a copy of the camera file into a PNG.
