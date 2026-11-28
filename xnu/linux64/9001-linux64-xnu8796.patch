@@ -1711,6 +1711,112 @@ index 0000000..cf52372
 +	linux64_call(LINUX64_CALL_HOSTCALL, &q);
 +	return q.result;
 +}
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index ff2c725..0503322 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -24,11 +24,14 @@
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <kern/debug.h>
++#include <kern/kalloc.h>
+ #include <kern/startup.h>
++#include <libkern/OSAtomic.h>
+ #include <libkern/amfi/amfi.h>
+ #include <mach/kern_return.h>
+ #include <sys/codesign.h>
+ #include <sys/mount.h>
++#include <sys/param.h>
+ #include <sys/priv.h>
+ #include <sys/proc.h>
+ #include <sys/systm.h>
+@@ -279,14 +282,69 @@ sweet_amfi_vnode_check_signature(struct vnode *vp, __unused struct label *label,
+  * launchd reports mach lookups as "error = 159: Sandbox restriction"
+  * (backboardd cannot reach mobilegestalt or iohideventsystem; tccd:
+  * "profile not found"). SWEET runs without a sandbox: operations succeed
+- * (checks allow, profile init is accepted); the few that must return
+- * data (container paths, extension tokens) fail with ENOENT. The first
+- * use of each operation number is logged.
++ * (checks allow, profile init is accepted). Sandbox extensions are handed
++ * out and accepted: with nothing enforced a token only has to exist, and
++ * without one tccd refuses Photos, Contacts and Calendar access to the
++ * services that ask ("Failed to issue Sandbox Extension"). Container paths
++ * fail with ENOENT. The first use of each operation number is logged.
+  */
+ static uint64_t sweet_sandbox_seen;
+ 
++/* libsystem_sandbox's buffer for a token */
++#define SWEET_EXTENSION_MAX     2048
++
++/* op 5: { class, type, value or 0, flags, token buffer, ... } */
++static int
++sweet_extension_issue(user_addr_t arg)
++{
++	uint64_t a[5];
++	char class[128], *token, *value;
++	size_t done;
++	int error = copyin(arg, a, sizeof(a));
++
++	if (error != 0) {
++		return error;
++	}
++	token = kalloc_data(SWEET_EXTENSION_MAX, Z_WAITOK | Z_ZERO);
++	value = kalloc_data(MAXPATHLEN, Z_WAITOK | Z_ZERO);
++	if (token == NULL || value == NULL) {
++		error = ENOMEM;
++	} else {
++		error = copyinstr((user_addr_t)a[0], class, sizeof(class), &done);
++		if (error == 0 && a[2] != 0) {
++			error = copyinstr((user_addr_t)a[2], value, MAXPATHLEN, &done);
++		}
++	}
++	if (error == 0) {
++		snprintf(token, SWEET_EXTENSION_MAX, "sweet;%u;%s;%s", (unsigned)a[1], class, value);
++		error = copyout(token, (user_addr_t)a[4], strlen(token) + 1);
++	}
++	if (token != NULL) {
++		kfree_data(token, SWEET_EXTENSION_MAX);
++	}
++	if (value != NULL) {
++		kfree_data(value, MAXPATHLEN);
++	}
++	return error;
++}
++
++/* op 6: { token, its length, where the handle goes }; handles are positive */
+ static int
+-sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
++sweet_extension_consume(user_addr_t arg)
++{
++	static int64_t handles;
++	uint64_t a[3];
++	int error = copyin(arg, a, sizeof(a));
++
++	if (error != 0) {
++		return error;
++	}
++	int64_t handle = OSIncrementAtomic64((SInt64 *)&handles) + 1;
++	return copyout(&handle, (user_addr_t)a[2], sizeof(handle));
++}
++
++static int
++sweet_sandbox_syscall(struct proc *p, int call, user_addr_t arg)
+ {
+ 	if (call >= 0 && call < 64 && !(sweet_sandbox_seen & (1ULL << call))) {
+ 		sweet_sandbox_seen |= 1ULL << call;
+@@ -295,9 +353,11 @@ sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
+ 		printf("SWEET Sandbox: %s op %d\n", name, call);
+ 	}
+ 	switch (call) {
+-	case 4:         /* container path (audit token / pid) */
+ 	case 5:         /* extension issue */
++		return sweet_extension_issue(arg);
+ 	case 6:         /* extension consume */
++		return sweet_extension_consume(arg);
++	case 4:         /* container path (audit token / pid) */
+ 	case 0x43:      /* container expected */
+ 		return ENOENT;
+ 	default:
 diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
 index b248d13..8d36152 100644
 --- a/bsd/vfs/vfs_syscalls.c
