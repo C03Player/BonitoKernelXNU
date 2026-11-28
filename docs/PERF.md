@@ -152,3 +152,17 @@ Also (same day): `bonito/tools/disable-jobs.py` sets Disabled=true on launchd jo
 remotepairingdeviced, useractivityd): a 3 hour hands-on boot logged 8551 xpcproxy launches because launchd kept restarting them (lskdd every 1 s, others every 4-10 s);
 after disabling them the steady launch rate fell from 1.4/s to 0.5/s. nanotimekitcompaniond and the Spotlight/Siri speech extensions (crash with
 sig 6, 12 times each) are the next respawners.
+
+## Hosted: measurements 2026-11-28
+
+Method: fresh boot in RAM mode, Settings open, 50 swipes at a fixed 1.5 s pace, mean of the display's 5 s swap counts. Swipes sent as
+fast as the commands return are not comparable between configurations (they finish twice as fast on a less busy system).
+
+| Configuration | Frames per second |
+|---|---|
+| as shipped, kernel run 46081853311 | 15.2 |
+| as shipped, rebuilt kernel (run 46106759904) | 15.5 |
+| `fairplayd`, `lskdd`, `bluetoothd`, `wifip2pd`, `CommCenter` kept from starting (one run, not on a fresh boot) | 12.1 |
+
+Stopping the services that restart in a loop cut program starts (719 to 545 in about 300 s on fresh boots) and the page fault livelock
+messages (85 to 25) but did not make scrolling faster, so it is not done.
