@@ -163,6 +163,10 @@ fast as the commands return are not comparable between configurations (they fini
 | as shipped, kernel run 46081853311 | 15.2 |
 | as shipped, rebuilt kernel (run 46106759904) | 15.5 |
 | `fairplayd`, `lskdd`, `bluetoothd`, `wifip2pd`, `CommCenter` kept from starting (one run, not on a fresh boot) | 12.1 |
+| 3 CPUs (`XNU_CPUS=3`), rebuilt kernel, one run | 11.5 |
+| 6 CPUs, rebuilt kernel, one run | 14.3 |
 
 Stopping the services that restart in a loop cut program starts (719 to 545 in about 300 s on fresh boots) and the page fault livelock
 messages (85 to 25) but did not make scrolling faster, so it is not done.
+
+4 CPUs stay the default. The livelock messages did not stop with 3 CPUs (76 in about 300 s), unlike the direct port's boot stalls.
