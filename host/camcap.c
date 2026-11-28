@@ -10,6 +10,8 @@
  * "width height bytesperline fourcc". The data are the sensor's Bayer samples (10 bit packed: 4 pixels in 5 bytes); host/camraw.py
  * turns them into a picture.
  */
+#define _GNU_SOURCE
+#include <sched.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
@@ -211,12 +213,14 @@ static void control(int fd, __u32 id, long value, const char *name)
 		fprintf(stderr, "camcap: %s %d (%d..%d)\n", name, c.value, q.minimum, q.maximum);
 }
 
+#define BUFFERS 8
+
 /* a running camera: frames come out of the video node's mapped buffers */
 struct stream {
 	int sensor, video;
 	unsigned width, height, bytesperline, fourcc, buffers;
-	void *map[4];
-	size_t len[4];
+	void *map[BUFFERS];
+	size_t len[BUFFERS];
 };
 
 static void stream_start(struct stream *st, const char *sensor_name, long exposure, long gain, long dgain)
@@ -273,11 +277,11 @@ static void stream_start(struct stream *st, const char *sensor_name, long exposu
 	if (ioctl(vfd, VIDIOC_S_FMT, &f) != 0)
 		die("video format");
 
-	struct v4l2_requestbuffers req = { .count = 4, .type = f.type, .memory = V4L2_MEMORY_MMAP };
+	struct v4l2_requestbuffers req = { .count = BUFFERS, .type = f.type, .memory = V4L2_MEMORY_MMAP };
 
 	if (ioctl(vfd, VIDIOC_REQBUFS, &req) != 0)
 		die("buffers");
-	for (unsigned i = 0; i < req.count && i < 4; i++) {
+	for (unsigned i = 0; i < req.count && i < BUFFERS; i++) {
 		struct v4l2_plane plane = { 0 };
 		struct v4l2_buffer b = { .index = i, .type = f.type, .memory = V4L2_MEMORY_MMAP, .length = 1, .m.planes = &plane };
 
@@ -297,17 +301,17 @@ static void stream_start(struct stream *st, const char *sensor_name, long exposu
 	st->height = f.fmt.pix_mp.height;
 	st->bytesperline = f.fmt.pix_mp.plane_fmt[0].bytesperline;
 	st->fourcc = f.fmt.pix_mp.pixelformat;
-	st->buffers = req.count < 4 ? req.count : 4;
+	st->buffers = req.count < BUFFERS ? req.count : BUFFERS;
 }
 
-/* the next frame's buffer (give it back with stream_done), or -1 when none came in 3 s */
-static int stream_next(struct stream *st)
+/* the next frame's buffer (give it back with stream_done), or -1 when none came in "ms" milliseconds */
+static int stream_next(struct stream *st, int ms)
 {
 	struct pollfd p = { .fd = st->video, .events = POLLIN };
 	struct v4l2_plane plane = { 0 };
 	struct v4l2_buffer b = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, .memory = V4L2_MEMORY_MMAP, .length = 1, .m.planes = &plane };
 
-	if (poll(&p, 1, 3000) <= 0 || ioctl(st->video, VIDIOC_DQBUF, &b) != 0)
+	if (poll(&p, 1, ms) <= 0 || ioctl(st->video, VIDIOC_DQBUF, &b) != 0)
 		return -1;
 	return b.index;
 }
@@ -341,7 +345,7 @@ static void shot(const char *sensor_name, const char *out, int frames, long expo
 
 	stream_start(&st, sensor_name, exposure, gain, dgain);
 	for (int got = 0; got < frames; got++) {
-		int i = stream_next(&st);
+		int i = stream_next(&st, 3000);
 
 		if (i < 0) {
 			errno = ETIMEDOUT;
@@ -381,6 +385,8 @@ static double now(void)
 }
 
 /* the amount of light taken, as exposure lines times analogue gain: exposure first, then gain */
+static int sent_e, sent_g = -1;          /* what the sensor has (a start forgets) */
+
 static void expose(const struct camera *c, int fd, double light)
 {
 	struct v4l2_control e = { .id = V4L2_CID_EXPOSURE }, g = { .id = V4L2_CID_ANALOGUE_GAIN };
@@ -391,8 +397,15 @@ static void expose(const struct camera *c, int fd, double light)
 	g.value = (int)(c->gain_unit - c->gain_unit / gain);
 	if (g.value > c->gain_max)
 		g.value = c->gain_max;
-	ioctl(fd, VIDIOC_S_CTRL, &e);
-	ioctl(fd, VIDIOC_S_CTRL, &g);
+	/* only what changed, and not every small step: each write goes over I2C to the sensor */
+	if (!sent_e || abs(e.value - sent_e) > sent_e / 20) {
+		ioctl(fd, VIDIOC_S_CTRL, &e);
+		sent_e = e.value;
+	}
+	if (sent_g < 0 || abs(g.value - sent_g) > 4) {
+		ioctl(fd, VIDIOC_S_CTRL, &g);
+		sent_g = g.value;
+	}
 }
 
 /*
@@ -457,11 +470,11 @@ static double convert(const struct stream *st, const struct camera *c, const uin
 
 static void serve(const char *path)
 {
-	int fd = open(path, O_RDWR | O_CREAT, 0644), running = 0;
+	int fd = open(path, O_RDWR | O_CREAT, 0644), running = 0, fresh = 0;
 	struct stream st;
 	struct camf_state state = { .magic = CAMF_SMAGIC };
 	uint32_t *out = malloc(CAMF_SLOT), beat = 0;
-	double beat_at = 0, light = 3000, wb[3] = { 1.6, 1, 1.4 };
+	double beat_at = 0, light = 3000, wb[3] = { 1.6, 1, 1.4 }, waited = 0, converted = 0, wrote = 0;
 
 	if (fd < 0 || ftruncate(fd, CAMF_SIZE) != 0 || !out)
 		die(path);
@@ -488,21 +501,29 @@ static void serve(const char *path)
 		const struct camera *c = &cameras[want - 1];
 		if (!running) {
 			stream_start(&st, c->sensor, -1, -1, -1);
+			sent_e = 0, sent_g = -1;
 			expose(c, st.sensor, light);
 			running = want;
+			fresh = 1;
 			fprintf(stderr, "camcap: %s on\n", c->sensor);
 		}
-		int i = stream_next(&st);
+		double t0 = now();
+		/* The rear camera's stream stops by itself every few seconds (30 frames a second; why is open): waited for only as long as
+		 * a frame can take, then started again. The first frame after a start takes longer. */
+		int i = stream_next(&st, fresh ? 1500 : 250);
+		double t1 = now();
 		if (i < 0) {
 			fprintf(stderr, "camcap: %s: no frame\n", c->sensor);
 			stream_stop(&st);
 			running = 0;
 			continue;
 		}
+		fresh = 0;
 		unsigned w, h, slot = !state.slot;
 		double mean = convert(&st, c, st.map[i], out, &w, &h, wb);
 
 		stream_done(&st, i);
+		double t2 = now();
 		/* towards a mean of 40 of 224 above black, a part of the way at a time (the controls act a few frames late) */
 		double factor = pow(40 / (mean > 1 ? mean : 1), 0.3);
 		double most = (double)c->exposure_max * c->gain_unit / (c->gain_unit - c->gain_max);
@@ -518,6 +539,13 @@ static void serve(const char *path)
 		if (pwrite(fd, out, (size_t)w * h * 4, CAMF_PIXELS + (off_t)slot * CAMF_SLOT) != (ssize_t)w * h * 4 ||
 		    pwrite(fd, &state, sizeof(state), CAMF_STATE) != sizeof(state))
 			die(path);
+		double t3 = now();
+		waited += t1 - t0, converted += t2 - t1, wrote += t3 - t2;
+		if (getenv("CAMCAP_TIMES") && state.seq % 50 == 0) {
+			fprintf(stderr, "camcap: per frame: waited %.1f ms, converted %.1f ms, wrote %.1f ms, cpu %d\n", waited * 20,
+			    converted * 20, wrote * 20, sched_getcpu());
+			waited = converted = wrote = 0;
+		}
 	}
 }
 

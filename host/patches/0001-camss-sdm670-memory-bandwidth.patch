@@ -1,0 +1,39 @@
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -1703,6 +1703,15 @@
+ 	},
+ };
+ 
++/* the VFEs' writes to memory: without a vote the full-size rear camera stalls while the GPU and the CPUs use the bus */
++static const struct resources_icc icc_res_sdm670[] = {
++	{
++		.name = "cam-mem",
++		.icc_bw_tbl.avg = 1500000,
++		.icc_bw_tbl.peak = 2500000,
++	},
++};
++
+ static const struct camss_subdev_resources csiphy_res_sm6350[] = {
+ 	/* CSIPHY0 */
+ 	{
+@@ -5618,6 +5627,8 @@
+ 	.csiphy_res = csiphy_res_670,
+ 	.csid_res = csid_res_670,
+ 	.vfe_res = vfe_res_670,
++	.icc_res = icc_res_sdm670,
++	.icc_path_num = ARRAY_SIZE(icc_res_sdm670),
+ 	.csiphy_num = ARRAY_SIZE(csiphy_res_670),
+ 	.csid_num = ARRAY_SIZE(csid_res_670),
+ 	.vfe_num = ARRAY_SIZE(vfe_res_670),
+--- a/arch/arm64/boot/dts/qcom/sdm670-google-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sdm670-google-common.dtsi
+@@ -743,6 +743,9 @@
+ };
+ 
+ &camss {
++	interconnects = <&mmss_noc MASTER_CAMNOC_HF0 0 &mem_noc SLAVE_EBI_CH0 0>;
++	interconnect-names = "cam-mem";
++
+ 	vdda-phy-supply = <&vreg_l1a_1p225>;
+ 	vdda-pll-supply = <&vreg_s6a_0p87>;
+ 
