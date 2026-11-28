@@ -369,11 +369,11 @@ static void shot(const char *sensor_name, const char *out, int frames, long expo
 
 static const struct camera {
 	const char *sensor;
-	int rotate, mirror;                     /* to stand upright; the front one is mirrored, as a mirror shows you */
+	int rotate, mirror;                     /* to stand upright */
 	int exposure_max, gain_max, gain_unit;  /* analogue gain = unit / (unit - code) */
 } cameras[2] = {
 	{ "imx363", 90, 0, 3000, 480, 512 },
-	{ "imx355", 270, 1, 2600, 960, 1024 },
+	{ "imx355", 90, 0, 2600, 960, 1024 },      /* (270 and mirrored showed it upside down: seen on the phone) */
 };
 
 static double now(void)

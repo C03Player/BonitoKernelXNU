@@ -11,8 +11,7 @@ actuator, front IMX355 (3280x2464). On the booted image:
     camcap shot imx355 /tmp/front.raw -n 20 -e 3000 -g 400
 
 `shot` (host/camcap.c) routes sensor, CSIPHY, CSID and a VFE raw interface and writes one frame of 10-bit packed Bayer samples; it prints
-width, height, bytes per line and the fourcc. On the PC: `host/camraw.py FRAME W H BPL FOURCC OUT.png ROTATE` (90 for the rear camera, 270
-for the front one). Verified by looking at the pictures: the rear camera showed what it was pointed at, the front camera, covered, showed
+width, height, bytes per line and the fourcc. On the PC: `host/camraw.py FRAME W H BPL FOURCC OUT.png ROTATE` (90 for both cameras). Verified by looking at the pictures: the rear camera showed what it was pointed at, the front camera, covered, showed
 dim light and sensor noise. Not there: autofocus (the lens stays where it is), automatic exposure, the ISP (white balance and noise
 reduction are crude, in the PC script). Pictures are private: they go to `logs/`, which git ignores.
 
@@ -22,7 +21,7 @@ iOS reaches its cameras through Apple's ISP driver (`AppleH10CamIn`) and its fir
 Apple's Camera app, and apps that use the camera, cannot see these cameras. Instead:
 
 - `camcap serve /tmp/xnucam` (started by `xnu-run`; `XNU_CAMERA=0` leaves the cameras out) switches a sensor on while asked, debayers one
-  cell in four to an upright BGRA picture (rear 756x1008, front 616x820, mirrored), sets exposure and gain towards a middle grey and a
+  cell in four to an upright BGRA picture (rear 756x1008, front 616x820), sets exposure and gain towards a middle grey and a
   grey-world white balance, and writes into the camera file (layout: `host/camfile.h`). Measured: 30 frames per second, a few percent of a
   CPU. Off 5 s after the last request.
 - `xnu.ko` (`cam=/tmp/xnucam`) and the kernel's `/dev/sweetcam` (`bsd/dev/linux64_cam.c`) give iOS read and write at offsets of that file.
