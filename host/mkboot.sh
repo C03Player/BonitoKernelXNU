@@ -18,6 +18,8 @@ echo "root:x:0:" > "$R/etc/group"
 ln -s busybox "$R/bin/sh"
 install -m755 host/initramfs/init "$R/init"
 install -m755 host/initramfs/report "$R/bin/report"
+install -m755 host/initramfs/cam-up "$R/bin/cam-up"
+gcc -static -O2 -s -Wall -o "$R/bin/camcap" host/camcap.c
 gcc -static -Os -s -o "$R/bin/rebootto" host/rebootto.c
 gcc -static -O2 -s -o "$R/bin/fbcopy" host/fbcopy.c
 gcc -static -O2 -s -o "$R/bin/evrelay" host/evrelay.c
@@ -25,7 +27,9 @@ gcc -static -O2 -s -I"${KHDR:-/usb/work/linux/hdr/include}" -o "$R/bin/kmsfb" ho
 gcc -static -O2 -s -I"${KHDR:-/usb/work/linux/hdr/include}" -o "$R/bin/adrenod" host/gpu/adrenod.c
 make -s -C "$SRC" O="$K" ARCH=arm64 INSTALL_MOD_PATH="$PWD/$R" INSTALL_MOD_STRIP=1 modules_install >/dev/null
 # drop module trees that gate 1 does not need, to fit the 64 MiB boot partition
-for d in sound drivers/media/{usb,pci,i2c,platform,dvb-frontends,tuners} drivers/infiniband drivers/net/ethernet drivers/staging fs/xfs fs/btrfs fs/nfs fs/smb; do rm -rf "$R"/lib/modules/*/kernel/$d; done
+for d in sound drivers/media/{usb,pci,dvb-frontends,tuners} drivers/infiniband drivers/net/ethernet drivers/staging fs/xfs fs/btrfs fs/nfs fs/smb; do rm -rf "$R"/lib/modules/*/kernel/$d; done
+# of the sensor and platform drivers, the phone's cameras only (cam-up)
+find "$R"/lib/modules/*/kernel/drivers/media/{i2c,platform} -type f ! -name 'imx355.ko*' ! -name 'imx363.ko*' ! -name 'lc898219xi.ko*' ! -name 'qcom-camss.ko*' -delete
 depmod -b "$R" "$(ls "$R/lib/modules")"
 # GPU firmware from the phone's vendor image (local only, never committed); paths as in the mainline device tree
 G=${GPUFW:-/usb/work/gpufw}

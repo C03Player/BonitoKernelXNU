@@ -1,0 +1,12 @@
+#!/bin/sh
+# cam-up: load Linux's camera drivers (Pixel 3a XL: rear imx363 with its lens actuator, front imx355, through qcom-camss) and wait for
+# the two sensors. Then: camcap list, camcap shot (host/camcap.c).
+for m in i2c-qcom-cci qcom-camss lc898219xi imx363 imx355; do
+	modprobe -q $m || echo "no module $m"
+done
+for i in $(seq 1 50); do
+	n=$(cat /sys/class/video4linux/v4l-subdev*/name 2>/dev/null | grep -c '^imx3')
+	[ "$n" = 2 ] && break
+	usleep 100000
+done
+cat /sys/class/video4linux/v4l-subdev*/name 2>/dev/null | grep '^imx3' || { echo "no camera sensor"; dmesg | grep -iE 'camss|imx3|cci' | tail -n 8; exit 1; }
