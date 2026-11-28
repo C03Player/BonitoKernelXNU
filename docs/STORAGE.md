@@ -26,3 +26,15 @@ after a reboot (the key store is a software stand-in), long use, a full save are
 the phone stayed on with Linux unresponsive (seen 2026-11-27). Tested 2026-11-27 with the phone on USB: it left USB 19 s after
 the slider (iOS had unmounted its disk), then appeared again 20 s later, apparently because it is powered: the bootloader starts slot A
 (the recovery), whose timer goes to the bootloader. Not tested unplugged. Restart was not tested.
+
+## Adding files to the iOS disk (tests, 2026-11-28)
+
+Before XNU starts (`XNU_PRESTART=script xnu-run`, or after a failed start, on the existing `/dev/mapper/iosroot`):
+
+1. `hfsreplay /dev/mapper/iosroot` (host/hfsreplay.c): the volume's journal holds changes that Linux would ignore.
+2. Set bit 8 of the volume header's attributes (byte 1030, "cleanly unmounted"), or Linux mounts it read-only.
+3. Mount a 33554432-sector dm linear of it with `-t hfsplus -o rw,force`, copy, unmount, remove the mapping.
+
+Tried in the snapshot in RAM only: Zebra 1.1.37 and Sileo 2.5.1 copied to /Applications (their app list database removed so iOS rebuilds
+it) both appeared; Zebra opens in its demo mode (no right to install: no package tools), Sileo aborts for a missing libzstd. After the
+copy, `xnu.ko` could not get its memory until `XNU_RAM=1216`. Not tried on the saved changes.
