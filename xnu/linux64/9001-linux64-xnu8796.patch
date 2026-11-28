@@ -1548,10 +1548,10 @@ index d405964..3033246 100644
  static LCK_GRP_DECLARE(sweet_pmem_grp, "sweet_pmem");
  static LCK_MTX_DECLARE(sweet_pmem_lock, &sweet_pmem_grp);
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index bb2a2bf..4d2d133 100644
+index bb2a2bf..a225d63 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -405,6 +405,79 @@ void (*unmountroot_pre_hook)(void);
+@@ -405,6 +405,81 @@ void (*unmountroot_pre_hook)(void);
  #endif
  void set_rootvnode(vnode_t);
  
@@ -1565,6 +1565,8 @@ index bb2a2bf..4d2d133 100644
 + *   mtl2-clients: who besides backboardd gets a Metal device. The direct port's list plus WebKit's processes, without which Safari's pages
 + *   were black (com.apple.WebKit.GPU "not listed: no Metal device"), and stock apps that draw with Metal (Maps stayed blank). Not Photos
 + *   (MobileSlideShow): with a device it aborts as soon as the library holds a picture (PXGCreateContext), without one it works.
++ *   Not chronod nor widget extensions: chronod's widget pictures need MTLPixelFormatRGB8_444_2P, which the bridge refuses, and
++ *   widgets turned black; without a device they are drawn.
 + *   With boot-arg sweetmesalog=1 also mtl2-tu-debug and mtl2-env: Turnip's own messages on the console.
 + */
 +static void
@@ -1603,8 +1605,8 @@ index bb2a2bf..4d2d133 100644
 +sweet_plugin_files_thread(void *arg __unused, wait_result_t wr __unused)
 +{
 +	sweet_plugin_write("/private/var/local/mtl2-clients",
-+	    "SpringBoard chronod PosterBoard AegirPoster CollectionsPoster com.apple.WebKit.GPU com.apple.WebKit.WebContent "
-+	    "Maps PhotosReliveWidget FitnessWidget Weather Freeform Measure Compass Magnifier\n");
++	    "SpringBoard PosterBoard AegirPoster CollectionsPoster com.apple.WebKit.GPU com.apple.WebKit.WebContent "
++	    "Maps Weather Freeform Measure Compass Magnifier\n");
 +	/* debugging switches of the plugin, one boot-arg each */
 +	if (sweet_plugin_flag("sweetmesalog")) {        /* Turnip's own messages on the console */
 +		sweet_plugin_write("/private/var/local/mtl2-tu-debug", "default\n");     /* leaves TU_DEBUG and MESA_LOG_FILE to mtl2-env */
@@ -1631,7 +1633,7 @@ index bb2a2bf..4d2d133 100644
  extern lck_rw_t rootvnode_rw_lock;
  
  SECURITY_READ_ONLY_LATE(struct mach_vm_range) bsd_pageable_range = {};
-@@ -1043,6 +1116,37 @@ bsd_init(void)
+@@ -1043,6 +1118,37 @@ bsd_init(void)
  	bsd_init_kprintf("calling siginit\n");
  	siginit(kernproc);
  
@@ -3133,7 +3135,7 @@ index 5d6b4e5..ea0cd98 100644
  
  const char *
 diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
-index c5e2d5c..5172fa2 100644
+index c5e2d5c..86bc54d 100644
 --- a/iokit/Kernel/arm/SweetSurface.cpp
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
 @@ -25,6 +25,7 @@
@@ -3165,27 +3167,10 @@ index c5e2d5c..5172fa2 100644
  	if (s->memory == NULL || !sweet_surface_publish(s)) {
  		s->release();
  		return NULL;
-@@ -348,13 +355,47 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+@@ -348,6 +355,23 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
  		s->pixelFormat = 0x42475241u;
  		one_plane = true;
  	}
-+	/*
-+	 * LINUX64: '_RB4', a two-plane format of the widget pictures chronod keeps: they showed black. Made as one-plane BGRA of its own
-+	 * geometry. Boot-arg sweetrb4=0 leaves it as asked.
-+	 */
-+	bool rb4 = false;
-+#if defined(SWEET_HOSTED)
-+	{
-+		uint32_t on = 1;
-+		PE_parse_boot_argn("sweetrb4", &on, sizeof(on));
-+		if (on && s->pixelFormat == 0x5f524234u) {
-+			s->pixelFormat = 0x42475241u;
-+			s->bytesPerElement = 4;
-+			s->elementWidth = s->elementHeight = 1;
-+			one_plane = rb4 = true;
-+		}
-+	}
-+#endif
 +	/*
 +	 * LINUX64: a WebKit process's one-plane surface gets a height that is a multiple of 4 rows. Web layers whose pixel height was not came
 +	 * up black on this graphics path (why is not known: not the memory size, nor binned rendering). The rows added show as a thin dark line
@@ -3206,15 +3191,7 @@ index c5e2d5c..5172fa2 100644
  	s->cacheMode = sweet_dict_u32(props, "IOSurfaceCacheMode", 0);
  	s->offset = sweet_dict_u32(props, "IOSurfaceOffset", 0);
  	if (s->width > SWEET_SURFACE_MAX_DIM || s->height > SWEET_SURFACE_MAX_DIM ||
- 	    s->bytesPerElement > 64 || s->elementWidth == 0 || s->elementHeight == 0) {
- 		return kIOReturnBadArgument;
- 	}
--	s->bytesPerRow = sweet_dict_u32(props, "IOSurfaceBytesPerRow",
-+	s->bytesPerRow = rb4 ? sweet_row_bytes(s->width, 1, 4) : sweet_dict_u32(props, "IOSurfaceBytesPerRow",
- 	    sweet_row_bytes(s->width, s->elementWidth, s->bytesPerElement));
- 	if (s->bytesPerRow < (uint64_t)sweet_div_up(s->width, s->elementWidth) * s->bytesPerElement) {
- 		return kIOReturnBadArgument;
-@@ -423,6 +464,27 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+@@ -423,6 +447,27 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
  	if (alloc < end) {
  		alloc = end;
  	}
@@ -3242,7 +3219,7 @@ index c5e2d5c..5172fa2 100644
  	alloc = round_page(alloc);
  	if (alloc == 0 || alloc > SWEET_SURFACE_MAX_ALLOC) {
  		return kIOReturnNoMemory;
-@@ -779,6 +841,11 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+@@ -779,6 +824,11 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
  			ret = kIOReturnNoMemory;
  		} else {
  			bzero(mem->getBytesNoCopy(), s->allocSize);

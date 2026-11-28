@@ -67,3 +67,11 @@ them at first boot, which this system never gets to (it boots as a restore does)
 before XNU starts; tried on the copy in RAM only. Opened and showing their screens: Calculator, Clock, Calendar, Photos, Notes, Mail, TV,
 Health, Reminders, Music, Settings, Weather (no data offline), Files. Blank after 30-90 s with no network: Maps, News, Podcasts, FaceTime
 (why is open). Writing this into the saved changes is the user's decision.
+
+## Widgets turned black (2026-11-28)
+
+Widgets appeared and then faded to black. `chronod`, which keeps the widgets' pictures, had a Metal device (`mtl2-clients`) and asked it
+for `MTLPixelFormatRGB8_444_2P` (surface format `_RB4`), which the metal2vulkan bridge refuses ("texture over buffer refused"). Making
+those surfaces BGRA in the kernel did not help (the format is chosen before). Without a Metal device for `chronod` (tried on the test
+copy with an immutable client list) the widgets are drawn, so the kernel's list no longer names `chronod` or widget extensions. Open: many
+widget programs are killed at boot for taking too long to start ("extension check-in timeout").
