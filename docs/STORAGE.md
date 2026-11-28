@@ -27,7 +27,7 @@ the phone stayed on with Linux unresponsive (seen 2026-11-27). Tested 2026-11-27
 the slider (iOS had unmounted its disk), then appeared again 20 s later, apparently because it is powered: the bootloader starts slot A
 (the recovery), whose timer goes to the bootloader. Not tested unplugged. Restart was not tested.
 
-On the user's own boot an XNU panic (such as the occasional startup crash "unexpected SIGKILL of launchd (CS_KILLED)") now sends the
+On the user's own boot an XNU panic (the startup crash seen in tests had a cause, since fixed: docs/PORT-HOSTED.md) now sends the
 phone to the bootloader after 30 s, so that it can be booted again (checked with the script on the PC, not by a crash on the phone).
 
 ## Adding files to the iOS disk (tests, 2026-11-28)
