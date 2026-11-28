@@ -1408,6 +1408,19 @@ static int __init xnu_init(void)
 
 	if (fki_version() != 0)
 		return -22;
+	/*
+	 * XNU's boot-args are our own followed by bootargs, in BOOT_LINE bytes. Never start without the latter: XNU would run,
+	 * then fail in ways that do not point here (launchd's exec refused: a panic). 69: " rd=md0", the timeout and timebase
+	 * arguments of build_boot (67 bytes), the space before bootargs and the final zero.
+	 */
+	if (bootargs) {
+		unsigned long room = BOOT_LINE - 69 - x_strlen(cmdline) - x_strlen(vm16k ? cmdline_16k : cmdline_4k);
+		if (x_strlen(bootargs) > room) {
+			logkv("xnu: boot-args too long: bytes", x_strlen(bootargs));
+			logkv("xnu: boot-args too long: room for", room);
+			return -7;	/* E2BIG */
+		}
+	}
 	/* every random number XNU takes comes from Linux's generator (the boot seeds, LINUX64_CALL_RANDOM): seeded first */
 	err = fki_random_wait();
 	if (err) { logkv("xnu: Linux's random number generator is not seeded, err", (u64_t)err); return err; }

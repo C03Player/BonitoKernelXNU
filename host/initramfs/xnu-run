@@ -76,7 +76,7 @@ command -v xnu-halt > /dev/null && { pidof xnu-halt > /dev/null || setsid xnu-ha
 pidof evrelay > /dev/null || setsid evrelay /tmp/xnuinput > /tmp/evrelay.log 2>&1 < /dev/null &
 # (XNU_DENY=words: sweetdeny. A long list of crashing daemons got launchd killed at boot, 2026-11-27: not a default)
 # boot-args the direct port's userland needs (bonito/tools/mkios.sh), without its hardware ones
-A="${NET:+$NET }${GPUARGS:+$GPUARGS }cpus=${XNU_CPUS:-4} keepsyms=1 serial=0 rootrw=1 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist ${XNU_DENY:+sweetdeny=$XNU_DENY }sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
+A="${NET:+$NET }${GPUARGS:+$GPUARGS }cpus=${XNU_CPUS:-4} keepsyms=1 rootrw=1 sweetfb_native=1 sweetfb_noconsole=1 wdt=-1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 sweethide=com.apple.MobileGestalt.plist ${XNU_DENY:+sweetdeny=$XNU_DENY }sweetargs=SpringBoard,UIStatusBarVisualProviderClassName,_UIStatusBarVisualProvider_Split1080"
 # the hosted display: a framebuffer in XNU's memory, copied to the host's fb0 (the text console lets go of it first)
 for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" $v/name 2>/dev/null && echo 0 > $v/bind; done
 F=
@@ -94,7 +94,7 @@ if [ -c /dev/fb0 ]; then
 	fi
 fi
 A="${FBARGS:+$FBARGS }$A"
-# XNU_BOOTARGS first: the first occurrence of a boot-arg counts
+# XNU_BOOTARGS first: the first occurrence of a boot-arg counts. All of XNU's boot-args have 608 bytes (xnu.ko refuses more).
 A="${XNU_BOOTARGS:+$XNU_BOOTARGS }$A"
 # XNU's memory is one contiguous block, which Linux cannot always put together (seen after much file traffic): then again with the caches
 # dropped, and with less. XNU_RAM=MB: that size only. (insmod stays for the whole run: a failure shows within seconds.)
@@ -102,10 +102,10 @@ ok=
 for M in ${XNU_RAM:-1408 1408 1216 1088}; do
 	setsid insmod /hosted/xnu.ko $F $G $SVC $STATE input_in=/tmp/xnuinput image=xnu/kernel.macho adtprops=xnu/adtprops.bin model=iPhone10,3 mode=3 cpus=${XNU_CPUS:-4} ram_mb=$M monitor_cpu=0 $DISK bootargs="\"$A\"" "$@" > /tmp/xnu-insmod.log 2>&1 < /dev/null &
 	for i in 1 2 3 4 5 6; do sleep 1; grep -q 'Cannot allocate memory' /tmp/xnu-insmod.log && break; done
-	grep -q 'Cannot allocate memory' /tmp/xnu-insmod.log || { ok=1; break; }
+	grep -q 'Cannot allocate memory' /tmp/xnu-insmod.log || { grep -q "can't insert" /tmp/xnu-insmod.log || ok=1; break; }
 	echo "no room for ${M} MB"
 	sync; echo 3 > /proc/sys/vm/drop_caches; echo 1 > /proc/sys/vm/compact_memory
 done
-[ -n "$ok" ] || { echo "XNU was not started (/tmp/xnu-insmod.log)"; exit 1; }
+[ -n "$ok" ] || { echo "XNU was not started (/tmp/xnu-insmod.log, dmesg)"; exit 1; }
 [ -n "$FBARGS" ] && { pidof kmsfb > /dev/null || setsid kmsfb > /tmp/kmsfb.log 2>&1 < /dev/null & }
 echo started

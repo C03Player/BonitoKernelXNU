@@ -23,6 +23,12 @@
 ## Host modules
 `hosted/` = `fki.ko` and `xnu.ko` of cf3399e (APSL-2.0 / GPL-2.0, see their SPDX lines), changed for this port: boot command line 608 bytes, `T0SZ=25` in XNU's world.
 Build: `make -C /usb/work/linux/out M=$PWD/hosted/fki-ko modules`, then `xnu-ko` with `KBUILD_EXTRA_SYMBOLS`.
+**Boot-args are limited**: XNU's line has 608 bytes, `xnu.ko`'s own take about 160 and `xnu-run`'s defaults about 375, which leaves about 60
+for `XNU_BOOTARGS`. Until 2026-11-28 `xnu.ko` dropped everything of ours when it did not fit, without a word; XNU then refused launchd's
+exec and panicked ("unexpected SIGKILL of launchd (CS_KILLED) ... namespace 9 code 0xe": 9/14 is `EXEC_EXIT_REASON_WRONG_PLATFORM`,
+`unentitled_ios_sim_launch` being gone). That explains the "occasional" startup panic of earlier notes (the logs looked at lack our
+boot-args) and, probably, the "bad" process-sampler kernel, which was tried with one more argument. Now `insmod` fails with "Argument list
+too long" and `dmesg` says by how much.
 Kernel layout of the hosted build: link address `0xfffffff007004000` (not large memory), 39-bit user and kernel tables.
 
 ## Phone tests (`host/hosted-test.sh NAME`: boots the test image without flashing; log in `logs/NAME.log`)
